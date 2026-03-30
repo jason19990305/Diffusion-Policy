@@ -1,5 +1,3 @@
-# --- NEW: RunPod / Docker dependencies ---
-# PyTorch and CUDA are provided by the base image (keep these in sync)
 # Core Frameworks
 lerobot
 gym-aloha
@@ -9,4 +7,4 @@ matplotlib
 tqdm
 numpy==1.26.4
 av
-# Add any other libraries used in aloha_train.py here
+hf_transfer

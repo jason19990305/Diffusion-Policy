@@ -30,8 +30,8 @@ WORKDIR /workspace
 
 # 4. Install Python Dependencies
 COPY requirements.txt .
+RUN pip install --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir gym-aloha
 
 # 5. Copy Source Code (Uses .dockerignore to skip data)
 COPY . .

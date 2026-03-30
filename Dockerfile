@@ -33,7 +33,7 @@ RUN pip install --no-cache-dir "lerobot[aloha,fe]"
 
 # 6. Copy Source Code (Uses .dockerignore to skip data)
 COPY . .
-RUN chmod +x scripts/*.sh
+RUN if [ -d scripts ]; then chmod +x scripts/*.sh; fi
 
 # Default Command: Start a bash shell
 CMD ["/bin/bash"]

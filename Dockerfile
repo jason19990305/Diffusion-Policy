@@ -31,14 +31,11 @@ WORKDIR /workspace
 # 4. Install Python Dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# 5. [OPTIONAL] Pre-install gym-aloha
-# This speeds up pod initialization
 RUN pip install --no-cache-dir gym-aloha
 
-# 6. Set Startup Script Target
-# We don't COPY the source code here because we will mount / git pull it on RunPod
-# for easier iteration (as discussed in implementation plan).
+# 5. Copy Source Code (Uses .dockerignore to skip data)
+COPY . .
+RUN chmod +x scripts/*.sh
 
 # Default Command: Start a bash shell
 CMD ["/bin/bash"]

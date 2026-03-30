@@ -3,10 +3,6 @@ name: Docker Build and Push to GHCR
 on:
   push:
     branches: ["main"]
-    # Also trigger when Dockerfile or requirements change
-    paths:
-      - "Dockerfile"
-      - "requirements.txt"
   workflow_dispatch:
 
 env:

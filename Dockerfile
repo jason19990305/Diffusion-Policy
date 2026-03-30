@@ -10,13 +10,13 @@ ENV HF_HOME=/workspace/huggingface
 ENV LEROBOT_HOME=/workspace/lerobot
 
 # 2. Install System Dependencies for ALOHA / MuJoCo Rendering
-RUN apt-get update && apt-get install -y --no-install-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     wget \
     curl \
     libgl1-mesa-glx \
     libosmesa6 \
-    libglew2.1 \
+    libglew-dev \
     libglfw3 \
     libxml2-dev \
     libjpeg-dev \

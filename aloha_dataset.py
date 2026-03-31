@@ -48,7 +48,8 @@ class AlohaDataset(Dataset):
         
         # --- 處理步數索引 ---
         # 建立一個索引表，方便快速切換時間序列
-        self.episode_data_index = self.lerobot_dataset.episode_data_index
+        self.episode_index = self.lerobot_dataset.episode_index
+
         
         # --- 正規化統計 ---
         stats = self.lerobot_dataset.meta.stats
@@ -95,9 +96,11 @@ class AlohaDataset(Dataset):
         return len(self.lerobot_dataset)
 
     def __getitem__(self, idx: int) -> dict:
+        ep_idx = self.lerobot_dataset.episode_index[idx]
+        from_idx, to_idx = self.lerobot_dataset.episode_data_index[ep_idx], self.lerobot_dataset.episode_data_index[ep_idx+1]
         # 獲取時間範圍
         # 為了簡化，這裡假設數據是連續的，實際中需處理 Episode 邊界
-        start_obs = max(0, idx - self.obs_horizon + 1)
+        start_obs = max(from_idx, idx - self.obs_horizon + 1)
         end_obs = idx + 1
         
         # 1. 取得影像序列 (obs_horizon, cams, 3, H, W)

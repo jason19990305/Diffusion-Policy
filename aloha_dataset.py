@@ -40,30 +40,21 @@ class Normalization:
 # ---------------------------------
 class AlohaDataset(Dataset):
     """
-    Wraps lerobot/aloha_sim_transfer_cube_human for Diffusion Policy training.
+    Wraps lerobot/aloha_sim_transfer_cube_human for Multi-View Diffusion Policy.
 
-    lerobot v0.5 API changes:
-      - Import: from lerobot.datasets.lerobot_dataset import LeRobotDataset
-      - Stats:  dataset.meta.stats  (nested dict of np.ndarray, NOT tensors)
-      - Images: returned as float32 tensor in [0, 1], shape (C, H, W)
-
-    prefetch_images=True (default):
-      Pre-decodes ALL video frames into RAM at init time.
-      Cost: ~3.3 GB RAM for 20000 samples x 2 frames x 96x96x3.
-      Benefit: __getitem__ becomes pure tensor slice -> eliminates pyav overhead.
-
-    Each sample:
-      obs    -> Tensor[obs_horizon, 14]               state, normalized to [-1,1]
-      image  -> Tensor[obs_horizon, 3, image_size, image_size]  RGB, [0,1]
-      action -> Tensor[pred_horizon, 14]              action, normalized to [-1,1]
+    Features:
+      - Multi-view: top, left_wrist, right_wrist
+      - RAM Caching: all states, actions, and images in RAM (float16 for images)
+      - Returns: Image (T, 3, 3, 96, 96) where 3 is Num Cameras.
     """
 
     DATASET_ID = "lerobot/aloha_sim_transfer_cube_human"
+    CAMERA_KEYS = ["observation.images.top", "observation.images.left_wrist", "observation.images.right_wrist"]
 
     def __init__(
         self,
         pred_horizon:    int  = 16,
-        obs_horizon:     int  = 4,   # 提升時序感知至 4 幀
+        obs_horizon:     int  = 4,
         image_size:      int  = 96,
         prefetch_images: bool = True,   # Pre-decode all frames (recommended)
         cache_dir:       str  = "cache", # Dir to store/load the .pt disk cache
@@ -91,16 +82,17 @@ class AlohaDataset(Dataset):
         del _tmp
 
         # Build delta_timestamps:
-        #   state/image history : t-(obs_horizon-1)/fps, ..., t
-        #   action future chunk : t, t+1/fps, ..., t+(pred_horizon-1)/fps
         obs_deltas    = [i / fps for i in range(-(obs_horizon - 1), 1)]
         action_deltas = [i / fps for i in range(pred_horizon)]
 
         delta_timestamps = {
-            "observation.images.top": obs_deltas,
-            "observation.state":      obs_deltas,
-            "action":                 action_deltas,
+            "observation.state": obs_deltas,
+            "action":            action_deltas,
         }
+        for k in self.CAMERA_KEYS:
+            delta_timestamps[k] = obs_deltas
+
+        print(f"[AlohaDataset] Cameras: {self.CAMERA_KEYS}")
         print(f"[AlohaDataset] obs_deltas    = {obs_deltas}")
         print(f"[AlohaDataset] action_deltas = {action_deltas}")
 
@@ -170,20 +162,29 @@ class AlohaDataset(Dataset):
                       f"{len(self.lerobot_dataset)} x {obs_horizon} frames ... "
                       f"(first run only, ~5-6 min)")
                 n = len(self.lerobot_dataset)
-                # Allocate as float16 to save ~50% RAM vs float32
+                num_cams = len(self.CAMERA_KEYS)
+                # Allocate: (N, T, Num_Cameras, 3, H, W)
                 self.cached_images = torch.zeros(
-                    (n, obs_horizon, 3, image_size, image_size), dtype=torch.float16
+                    (n, obs_horizon, num_cams, 3, image_size, image_size), dtype=torch.float16
                 )
-                for i in tqdm(range(n), desc="Prefetching images", ncols=80):
-                    raw = self.lerobot_dataset[i]["observation.images.top"]
-                    if raw.dtype != torch.float32:
-                        raw = raw.float()
-                    if raw.max() > 1.5:          # safety: handle uint8 leak
-                        raw = raw / 255.0
-                    resized = torch.stack([
-                        self.image_transform(raw[t]) for t in range(obs_horizon)
-                    ])
-                    self.cached_images[i] = resized.half()
+                for i in tqdm(range(n), desc="Multi-View Prefetch", ncols=80):
+                    item = self.lerobot_dataset[i]
+                    batch_view = []
+                    for k in self.CAMERA_KEYS:
+                        raw = item[k] # (T, 3, H_orig, W_orig)
+                        if raw.dtype != torch.float32: raw = raw.float()
+                        if raw.max() > 1.5: raw = raw / 255.0
+                        
+                        resized = torch.stack([
+                            self.image_transform(raw[t]) for t in range(obs_horizon)
+                        ]) # (T, 3, 96, 96)
+                        batch_view.append(resized)
+                    
+                    # Stack Cameras: (T, 3, 3, 96, 96)
+                    # Use permute next if needed, but current shape: list of [T, 3, 96, 96]
+                    # We want (T, num_cams, 3, 96, 96)
+                    stacked = torch.stack(batch_view, dim=1) 
+                    self.cached_images[i] = stacked.half()
 
                 # Save to disk for future runs
                 print(f"[AlohaDataset] Saving cache to: {self.cache_path}")
@@ -226,9 +227,9 @@ if __name__ == "__main__":
     dataset = AlohaDataset(pred_horizon=16, obs_horizon=2, image_size=96)
 
     sample = dataset[0]
-    print(f"\n[obs]    shape : {sample['obs'].shape}")    # Expected: (2, 14)
-    print(f"[image]  shape : {sample['image'].shape}")   # Expected: (2, 3, 96, 96)
-    print(f"[action] shape : {sample['action'].shape}")  # Expected: (16, 14)
+    print(f"\n[obs]    shape : {sample['obs'].shape}")    # (2, 14)
+    print(f"[image]  shape : {sample['image'].shape}")   # (2, 3, 3, 96, 96) (T, Cam, C, H, W)
+    print(f"[action] shape : {sample['action'].shape}")  # (16, 14)
 
     print(f"\n[obs]    min/max: {sample['obs'].min():.3f} / {sample['obs'].max():.3f}")
     print(f"[image]  min/max: {sample['image'].min():.3f} / {sample['image'].max():.3f}")

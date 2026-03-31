@@ -75,6 +75,11 @@ class AlohaDataset(Dataset):
             self.cached_images = torch.load(self.cache_path, map_location="cpu", weights_only=True, mmap=True)
         else:
             self._create_image_cache()
+            
+        # --- Add these two lines at the end of __init__ ---
+        self.state_dim = self.cached_states.shape[-1]   # Should be 14 for ALOHA
+        self.action_dim = self.cached_actions.shape[-1] # Should be 14 for ALOHA
+        print(f"[AlohaDataset] Initialized with state_dim={self.state_dim}, action_dim={self.action_dim}")
 
     def _create_image_cache(self):
         """Decoding and resizing frames. Stored as FP16 to minimize disk/RAM usage."""

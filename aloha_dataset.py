@@ -6,16 +6,14 @@ import torchvision.transforms as T
 from tqdm import tqdm
 import warnings
 
-# Suppress torchvision video warnings (LeRobot handles video decoding via PyAV)
 warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 class Normalization:
-    """Helper class for Min-Max normalization to [-1, 1] range."""
+    """Standard Min-Max Normalization to [-1, 1]"""
     def __init__(self, min_val, max_val):
         self.min = min_val.copy().astype(np.float32)
         self.max = max_val.copy().astype(np.float32)
-        # Prevent division by zero for constant dimensions
         self.range = np.where((self.max - self.min) == 0, 1e-5, self.max - self.min)
 
     def normalize(self, x):
@@ -26,8 +24,8 @@ class Normalization:
 
 class AlohaDataset(Dataset):
     """
-    Optimized Dataset class for ALOHA Diffusion Policy (LeRobot v0.5.0 compatible).
-    Features RAM caching for states/actions and Memory-Mapped (mmap) image caching.
+    Robust ALOHA Dataset for LeRobot v0.5.0+.
+    Uses manual boundary detection to avoid unstable API attributes.
     """
     DATASET_ID = "lerobot/aloha_sim_transfer_cube_human"
 
@@ -42,36 +40,43 @@ class AlohaDataset(Dataset):
         self.obs_horizon  = obs_horizon
         self.image_size   = image_size
 
-        # 1. Initialize LeRobot dataset structure
+        # 1. Load Dataset Structure
         self.lerobot_dataset = LeRobotDataset(self.DATASET_ID, video_backend="pyav")
         self.camera_keys = [k for k in self.lerobot_dataset.features if k.startswith("observation.images.")]
         
-        # Access underlying HuggingFace dataset for high-speed batch access
+        # Access the underlying HuggingFace dataset
         hf_data = self.lerobot_dataset.hf_dataset
 
-        # 2. Handle Episode Indices (Compatibility fix for LeRobot v0.5.0)
-        # episode_data_index tracks the start/end frames for each episode
-        if hasattr(self.lerobot_dataset, "episode_data_index"):
-            self.episode_data_index = self.lerobot_dataset.episode_data_index
-        else:
-            self.episode_data_index = self.lerobot_dataset.meta.episode_data_index
+        # ------------------------------------------------------------------
+        # FIX: Manual Episode Boundary Detection (Bulletproof Method)
+        # Instead of relying on self.lerobot_dataset.episode_data_index, 
+        # we calculate it directly from the 'episode_index' column.
+        # ------------------------------------------------------------------
+        print("[AlohaDataset] Analyzing episode boundaries...")
+        ep_ids = np.array(hf_data["episode_index"]) # e.g., [0,0,0,1,1,2,2,2...]
+        
+        # Find where the episode ID changes
+        diff = np.diff(ep_ids)
+        change_indices = np.where(diff != 0)[0] + 1
+        
+        # Construct boundary array: [start_of_ep0, start_of_ep1, ..., total_length]
+        self.episode_data_index = np.concatenate([[0], change_indices, [len(ep_ids)]])
+        self.frame_to_episode_id = torch.from_numpy(ep_ids)
+        
+        print(f"[AlohaDataset] Detected {len(self.episode_data_index)-1} episodes.")
+        # ------------------------------------------------------------------
 
-        # Maps each frame index to its corresponding episode ID
-        self.frame_to_episode_id = torch.from_numpy(np.array(hf_data["episode_index"]))
-
-        # 3. Fast RAM Caching: States and Actions
-        # Fetching entire columns at once is ~100x faster than indexed looping
-        print("[AlohaDataset] Fast Caching States & Actions to RAM...")
+        # 2. Fast Cache States & Actions to RAM
+        print("[AlohaDataset] Fast Caching States & Actions...")
         self.cached_states = torch.from_numpy(np.array(hf_data["observation.state"])).float()
         self.cached_actions = torch.from_numpy(np.array(hf_data["action"])).float()
         
-        # 4. Normalization Statistics
+        # 3. Normalization Stats
         stats = self.lerobot_dataset.meta.stats
         self.state_normalizer  = Normalization(np.array(stats["observation.state"]["min"]), np.array(stats["observation.state"]["max"]))
         self.action_normalizer = Normalization(np.array(stats["action"]["min"]), np.array(stats["action"]["max"]))
 
-        # 5. Optimized Image Cache (Memory Mapping)
-        # Using mmap=True allows near-instant loading and efficient RAM usage on H100
+        # 4. Image Cache (Memory-Mapped)
         os.makedirs(cache_dir, exist_ok=True)
         self.cache_path = os.path.join(cache_dir, f"aloha_img_obs{obs_horizon}_s{image_size}.pt")
 
@@ -82,23 +87,20 @@ class AlohaDataset(Dataset):
             self._create_image_cache()
 
     def _create_image_cache(self):
-        """One-time video decoding and resizing. Saves as float16 to optimize storage."""
-        print("[AlohaDataset] No cache found. Decoding videos (this may take a few minutes)...")
+        """Decoding and resizing frames to float16 cache file."""
+        print("[AlohaDataset] No cache found. Creating image cache...")
         n = len(self.lerobot_dataset)
         num_cams = len(self.camera_keys)
-        
         resize = T.Resize((self.image_size, self.image_size), antialias=True)
         
-        # Pre-allocate tensor (N, Num_Cams, C, H, W) in FP16 to halve disk/RAM footprint
         self.cached_images = torch.zeros((n, num_cams, 3, self.image_size, self.image_size), dtype=torch.float16)
 
-        for i in tqdm(range(n), desc="Decoding Frames"):
+        for i in tqdm(range(n), desc="Decoding Video Frames"):
             item = self.lerobot_dataset[i]
             for c_idx, k in enumerate(self.camera_keys):
-                # Retrieve last frame (T=1) from the returned sequence
-                img = item[k][-1] 
+                img = item[k][-1] # Take the last frame of the window
                 if img.dtype != torch.float32: img = img.float()
-                if img.max() > 1.5: img /= 255.0 # Scale to [0, 1]
+                if img.max() > 1.5: img /= 255.0
                 self.cached_images[i, c_idx] = resize(img).half()
 
         print(f"[AlohaDataset] Saving cache to: {self.cache_path}")
@@ -108,47 +110,37 @@ class AlohaDataset(Dataset):
         return len(self.lerobot_dataset)
 
     def __getitem__(self, idx: int) -> dict:
-        """Retrieves synchronized sequence of images, states, and actions."""
-        # Get episode boundaries to prevent cross-episode data leakage
+        """Fetch synchronized data windows within episode boundaries."""
         ep_id = self.frame_to_episode_id[idx]
         start_idx = self.episode_data_index[ep_id]
         end_idx = self.episode_data_index[ep_id + 1]
 
-        # 1. Observation Window (Lookback)
-        # If the window goes before episode start, we clip and then pad later
+        # --- 1. Observation Window ---
         s_lookback = max(start_idx, idx - self.obs_horizon + 1)
-        
-        # Slicing tensors is extremely efficient
         img_seq = self.cached_images[s_lookback : idx + 1]
         raw_state = self.cached_states[s_lookback : idx + 1]
         
-        # Handle Padding for Episode Start (Repeat first frame/state)
+        # Padding for Episode Start
         if img_seq.shape[0] < self.obs_horizon:
             pad_len = self.obs_horizon - img_seq.shape[0]
-            
-            img_padding = img_seq[0:1].expand(pad_len, -1, -1, -1, -1)
-            img_seq = torch.cat([img_padding, img_seq], dim=0)
-            
-            state_padding = raw_state[0:1].expand(pad_len, -1)
-            raw_state = torch.cat([state_padding, raw_state], dim=0)
+            img_seq = torch.cat([img_seq[0:1].expand(pad_len, -1, -1, -1, -1), img_seq], dim=0)
+            raw_state = torch.cat([raw_state[0:1].expand(pad_len, -1), raw_state], dim=0)
 
-        # 2. Action Window (Lookforward)
-        # Cannot predict beyond the current episode
+        # --- 2. Action Window ---
         e_lookforward = min(end_idx, idx + self.pred_horizon)
         raw_action = self.cached_actions[idx : e_lookforward]
         
-        # Handle Padding for Episode End (Repeat last action)
+        # Padding for Episode End
         if raw_action.shape[0] < self.pred_horizon:
             pad_len = self.pred_horizon - raw_action.shape[0]
-            action_padding = raw_action[-1:].expand(pad_len, -1)
-            raw_action = torch.cat([raw_action, action_padding], dim=0)
+            raw_action = torch.cat([raw_action, raw_action[-1:].expand(pad_len, -1)], dim=0)
 
-        # 3. Final Normalization and Conversion
+        # --- 3. Finalize ---
         state_norm  = self.state_normalizer.normalize(raw_state.numpy())
         action_norm = self.action_normalizer.normalize(raw_action.numpy())
 
         return {
             "obs":    torch.from_numpy(state_norm).float(),
-            "image":  img_seq.float(), # Convert FP16 cache back to FP32 for model
+            "image":  img_seq.float(), 
             "action": torch.from_numpy(action_norm).float(),
         }

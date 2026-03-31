@@ -1,30 +1,39 @@
 #!/bin/bash
 
 # =================================================================
-# H100 專用 Diffusion Policy 訓練腳本 (Aloha 任務)
+# H100 Optimized Training Script for Aloha Diffusion Policy
 # =================================================================
 
-# 1. 確保環境變數正確 (預防多 GPU 環境出錯)
-export CUDA_VISIBLE_DEVICES=0
-export WANDB_PROJECT="aloha_diffusion_h100"
+# 1. 環境變數設定
+# 增加卷積算子搜尋優化，讓 H100 跑得更快
+export TORCH_CUDNN_V8_API_ENABLED=1
+export WANDB_MODE=online  # 如果沒裝 wandb 可以改成 offline
 
-# 2. 啟動訓練
-# 注意：這裡的參數是針對 H100 80GB 優化的超參數
+# 2. 超參數設定 (針對 H100 80GB)
+# ---------------------------------------------------------
+# 原本 BS=32, 現在提高到 256 (H100 處理大 Batch 極快)
+BATCH_SIZE=256
+
+# 隨著 Batch Size 增加，LR 也要適度調高以維持收斂速度
+# 遵循 Linear Scaling Rule: 2e-4 * (256/32) = 1.6e-3，但保險起見設為 8e-4
+LEARNING_RATE=8e-4
+
+# 設定總步數 (50,000 步在 BS=256 下代表看過更多數據)
+TOTAL_STEPS=50000
+
+# 設定 CPU 讀取線程 (RunPod H100 建議設為 8)
+NUM_WORKERS=8
+# ---------------------------------------------------------
+
+echo "🚀 Starting H100 Optimized Training..."
+echo "📦 Batch Size: $BATCH_SIZE"
+echo "💡 Learning Rate: $LEARNING_RATE"
+echo "🧵 CPU Workers: $NUM_WORKERS"
+
 python aloha_train.py \
-    --dataset_repo_id "jason19990305/aloha_sim_transfer_cube_human" \
-    --batch_size 256 \
-    --num_workers 8 \
-    --learning_rate 1e-4 \
-    --num_epochs 1000 \
-    --device "cuda" \
-    --use_amp True \
-    --seed 42 \
-    --eval_freq 50 \
-    --save_freq 100 \
-    --checkpoint_path "./checkpoints/h100_optimized"
+    --batch_size $BATCH_SIZE \
+    --lr $LEARNING_RATE \
+    --total_steps $TOTAL_STEPS \
+    --num_workers $NUM_WORKERS
 
-# 說明：
-# --batch_size 256: H100 80GB 綽綽有餘。增大 Batch 可以讓梯度更穩定並大幅縮短訓練時間。
-# --use_amp True: 啟用自動混合精度 (Automatic Mixed Precision)，H100 跑 BF16/FP16 非常快。
-# --num_workers 8: 根據您 RunPod 截圖顯示只有 8 vCPU，這裡設為 8 是為了不讓 CPU 成為數據讀取的瓶頸。
-# --learning_rate 1e-4: 隨著 Batch Size 增大，我們微調了學習率以維持收斂速度。
+echo "✅ Training session finished."

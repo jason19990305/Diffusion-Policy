@@ -1,17 +1,19 @@
 #!/bin/bash
-set -e  # 如果任何指令出錯，立刻停止腳本
 
-# ... 前面的參數設定 ...
+# --- 參數設定 ---
+BS=256
+LR=8e-4
+STEPS=50000
+WORKERS=8
+SAVE=5000
 
-echo "🚀 Starting H100 Optimized Training..."
+echo "----------------------------------------------------"
+echo "🚀 H100 DEEP LEARNING MODE"
+echo "📦 Batch Size: $BS"
+echo "----------------------------------------------------"
 
-# 執行訓練
-python aloha_train.py \
-    --batch_size $BATCH_SIZE \
-    --lr $LEARNING_RATE \
-    --total_steps $TOTAL_STEPS \
-    --num_workers $NUM_WORKERS \
-    --save_interval $SAVE_INTERVAL
+# 確保存檔目錄存在
+mkdir -p checkpoints
 
-# 只有上面成功才會執行到這裡
-echo "✅ Training session finished successfully."
+# 執行指令 (寫成單行最保險，避免換行連接符出錯)
+python aloha_train.py --batch_size "$BS" --lr "$LR" --total_steps "$STEPS" --num_workers "$WORKERS" --save_interval "$SAVE"

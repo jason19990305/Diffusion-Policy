@@ -1,49 +1,51 @@
 #!/bin/bash
 
-# 1. 更新系統並安裝必要的系統套件 (用於 MuJoCo, OpenCV, 音訊處理)
+# 1. 系統環境檢查
+echo "Checking Python version..."
+PYTHON_VERSION=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+if [ "$PYTHON_VERSION" != "3.12" ]; then
+    echo "❌ Error: Python version is $PYTHON_VERSION. Please use a Python 3.12 template."
+    # exit 1  # 如果真的不是 3.12 就停止執行
+fi
+
+# 2. 安裝系統相依庫 (MuJoCo 與 OpenCV 必備)
 echo "Installing system dependencies..."
 apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libosmesa6-dev \
     libglew-dev \
-    mesa-utils \
+    libglib2.0-0 \
     ffmpeg \
     libsndfile1 \
-    git \
     git-lfs \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 升級 pip
-pip install --upgrade pip
+# 3. 確保 pip 與路徑正確
+python -m pip install --upgrade pip
 
-# 3. 安裝 PyTorch (根據您的清單使用 cu128 版本)
-# 注意：若 RunPod 鏡像已自帶 torch，此步可視情況跳過或調整版本
-echo "Installing PyTorch suite..."
-pip install torch==2.7.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-
-# 4. 安裝核心深度學習與 Diffusion 套件
+# 4. 安裝核心套件 (使用 python -m pip 避免路徑錯誤)
 echo "Installing core libraries..."
-pip install \
+python -m pip install \
     diffusers==0.35.2 \
     accelerate==1.12.0 \
     transformers==5.3.0 \
     datasets==4.5.0 \
     huggingface_hub==1.7.1
 
-# 5. 安裝機器人環境與 LeRobot
-echo "Installing Robotics environments..."
-pip install \
+# 5. 安裝 LeRobot 0.5.0 與機器人環境
+echo "Installing LeRobot 0.5.0 and Robotics stack..."
+python -m pip install \
+    lerobot==0.5.0 \
     mujoco==3.6.0 \
     gymnasium==1.2.2 \
     dm_control==1.0.38 \
     zarr==3.1.5 \
-    lerobot==0.5.0 \
     draccus==0.10.0 \
     omegaconf==2.3.0
 
-# 6. 安裝數據處理與日誌套件
+# 6. 安裝其餘工具
 echo "Installing utilities..."
-pip install \
+python -m pip install \
     opencv-python==4.9.0.80 \
     av==15.1.0 \
     wandb==0.24.0 \
@@ -52,7 +54,7 @@ pip install \
     scipy==1.15.3 \
     einops==0.8.1
 
-# 7. 安裝您的專案以 Editable 模式 (如果有 setup.py 或 pyproject.toml)
-# pip install -e .
-
-echo "Installation complete!"
+# 7. 驗證
+echo "------------------------------------------"
+python -c "import lerobot; print('✅ SUCCESS: LeRobot version', lerobot.__version__, 'is ready!')"
+echo "------------------------------------------"

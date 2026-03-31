@@ -95,36 +95,60 @@ class TimestepEmbedder(nn.Module):
         return self.mlp(x) 
 
 # ---------------------------------
+# Efficient Attention using SDPA (Flash Attention)
+# ---------------------------------
+class EfficientAttention(nn.Module):
+    """
+    A memory-efficient multi-head attention implementation that 
+    leverages torch.nn.functional.scaled_dot_product_attention.
+    """
+    def __init__(self, embed_dim, num_heads):
+        super().__init__()
+        self.num_heads = num_heads
+        self.embed_dim = embed_dim
+        self.head_dim = embed_dim // num_heads
+        assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
+
+        self.qkv = nn.Linear(embed_dim, embed_dim * 3)
+        self.proj = nn.Linear(embed_dim, embed_dim)
+
+    def forward(self, x):
+        B, N, C = x.shape
+        # 1. Linear projection -> (B, N, 3, H, D) -> (3, B, H, N, D)
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        # 2. Scaled Dot Product Attention (triggers Flash Attention if available)
+        attn_out = F.scaled_dot_product_attention(q, k, v) # (B, H, N, D)
+
+        # 3. Reshape and project back
+        attn_out = attn_out.transpose(1, 2).reshape(B, N, C)
+        return self.proj(attn_out)
+
+
+# ---------------------------------
 # Transformer Block Class
 # ---------------------------------
 class TransformerBlock(nn.Module):
     def __init__(self, embed_dim=256, num_heads=8, mlp_ratio=4.0):
         super().__init__()
         self.norm1 = nn.LayerNorm(embed_dim)
-        self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        
+        # --- Original Implementation (Commented out) ---
+        # self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        
+        # --- New Efficient Implementation ---
+        self.attn = EfficientAttention(embed_dim, num_heads)
+        
         self.norm2 = nn.LayerNorm(embed_dim)
         hidden_dim = int(embed_dim * mlp_ratio)
         self.mlp = SwiGLU(embed_dim, hidden_dim, embed_dim)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        
-        # 1. residual connection for attention
-        x_res = x
-        # 2. layer norm
-        x = self.norm1(x)
-        # 3. self-attention
-        x, _ = self.attn(x, x, x)
-        # 4. add residual
-        x = x + x_res
-        # 5. residual connection for MLP
-        x_res = x
-        # 6. layer norm
-        x = self.norm2(x)
-        # 7. MLP
-        x = self.mlp(x)
-        # 8. add residual
-        x = x + x_res
-        
+        # 1. self-attention with residual
+        x = x + self.attn(self.norm1(x))
+        # 2. MLP with residual
+        x = x + self.mlp(self.norm2(x))
         return x
 
 # ---------------------------------
@@ -160,14 +184,16 @@ class DiffusionPolicy(nn.Module):
         # --- Image input parameters ---
         use_image: bool = False,      # Enable image conditioning
         in_channels: int = 3,         # RGB channels
-        image_size: int = 96,         # Resize target (H = W)
-        patch_size: int = 16,         # patch_size=16 -> 6x6=36 patches per image
+        image_size: int = 128,        # Resize target (H = W)
+        patch_size: int = 8,          # 縮小 Patch 從 16 -> 8 以提升精度
+        use_checkpoint: bool = False  # Enable Gradient Checkpointing
     ):
         super().__init__()
         self.action_dim = action_dim
         self.state_dim = state_dim
         self.embed_dim = embed_dim
         self.use_image = use_image
+        self.use_checkpoint = use_checkpoint
         
         # 1. Observation (state) embedding
         self.obs_embedder = nn.Linear(state_dim, embed_dim)
@@ -184,8 +210,8 @@ class DiffusionPolicy(nn.Module):
                 patch_size=patch_size
             )
             # Number of patches per single image frame
-            patches_per_side = image_size // patch_size          # 96 // 16 = 6
-            self.num_patches_per_image = patches_per_side ** 2   # 6 * 6 = 36
+            patches_per_side = image_size // patch_size          
+            self.num_patches_per_image = patches_per_side ** 2   
             print(f"[DiffusionPolicy] Image mode: {image_size}x{image_size}, "
                   f"patch_size={patch_size}, {self.num_patches_per_image} patches/image")
         
@@ -243,9 +269,14 @@ class DiffusionPolicy(nn.Module):
         pos_emb = TimestepEmbedder.sinusoidal(positions, self.embed_dim)
         x = x + pos_emb
         
-        # 8. Pass through Transformer blocks
+        # 8. Pass through Transformer blocks (with optional Gradient Checkpointing)
         for block in self.blocks:
-            x = block(x)
+            if self.use_checkpoint and self.training:
+                # Need to wrap block.forward to call it with checkpoint
+                import torch.utils.checkpoint as cp
+                x = cp.checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         
         # 9. Extract only the action tokens (always at the tail of the sequence)
         action_seq_len = noised_actions.shape[1]

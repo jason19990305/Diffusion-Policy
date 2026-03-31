@@ -49,15 +49,14 @@ class AlohaDataset(Dataset):
     """
 
     DATASET_ID = "lerobot/aloha_sim_transfer_cube_human"
-    CAMERA_KEYS = ["observation.images.top", "observation.images.left_wrist", "observation.images.right_wrist"]
 
     def __init__(
         self,
         pred_horizon:    int  = 16,
         obs_horizon:     int  = 4,
-        image_size:      int  = 96,
-        prefetch_images: bool = True,   # Pre-decode all frames (recommended)
-        cache_dir:       str  = "cache", # Dir to store/load the .pt disk cache
+        image_size:      int  = 128,    # 提升解析度 96 -> 128
+        prefetch_images: bool = True,
+        cache_dir:       str  = "cache",
     ):
         self.pred_horizon = pred_horizon
         self.obs_horizon  = obs_horizon
@@ -66,22 +65,27 @@ class AlohaDataset(Dataset):
         self.action_dim   = 14
         self.prefetch_images = prefetch_images
 
-        # Cache file path: unique per (obs_horizon, image_size) to avoid conflicts
-        os.makedirs(cache_dir, exist_ok=True)
-        self.cache_path = os.path.join(
-            cache_dir,
-            f"aloha_images_obs{obs_horizon}_s{image_size}.pt"
-        )
-
         print(f"[AlohaDataset] Loading: {self.DATASET_ID}")
 
-        # Load dataset just to read FPS from metadata (before setting delta_timestamps)
-        _tmp = LeRobotDataset(self.DATASET_ID)
-        fps = _tmp.meta.fps
-        print(f"[AlohaDataset] FPS = {fps}")
-        del _tmp
+        # 1. Load dataset (first pass to get features)
+        self.lerobot_dataset = LeRobotDataset(
+            self.DATASET_ID,
+            video_backend="pyav",
+        )
+        fps = self.lerobot_dataset.meta.fps
 
-        # Build delta_timestamps:
+        # 2. Dynamic Camera Detection
+        # Finds all columns starting with "observation.images."
+        self.camera_keys = [
+            k for k in self.lerobot_dataset.features 
+            if k.startswith("observation.images.")
+        ]
+        if len(self.camera_keys) == 0:
+            raise ValueError(f"No cameras found in dataset {self.DATASET_ID}!")
+        
+        print(f"[AlohaDataset] Detected Cameras: {self.camera_keys} (FPS={fps})")
+
+        # 3. Build delta_timestamps for retrieval
         obs_deltas    = [i / fps for i in range(-(obs_horizon - 1), 1)]
         action_deltas = [i / fps for i in range(pred_horizon)]
 
@@ -89,17 +93,21 @@ class AlohaDataset(Dataset):
             "observation.state": obs_deltas,
             "action":            action_deltas,
         }
-        for k in self.CAMERA_KEYS:
+        for k in self.camera_keys:
             delta_timestamps[k] = obs_deltas
 
-        print(f"[AlohaDataset] Cameras: {self.CAMERA_KEYS}")
-        print(f"[AlohaDataset] obs_deltas    = {obs_deltas}")
-        print(f"[AlohaDataset] action_deltas = {action_deltas}")
-
+        # Re-initialize with delta_timestamps
         self.lerobot_dataset = LeRobotDataset(
             self.DATASET_ID,
             delta_timestamps=delta_timestamps,
-            video_backend="pyav", # Force pyav to avoid torchcodec errors in WSL
+            video_backend="pyav",
+        )
+        
+        # Unique cache path for dynamic cameras
+        os.makedirs(cache_dir, exist_ok=True)
+        self.cache_path = os.path.join(
+            cache_dir,
+            f"aloha_images_obs{obs_horizon}_s{image_size}_c{len(self.camera_keys)}.pt"
         )
         print(f"[AlohaDataset] Total samples: {len(self.lerobot_dataset)}")
 
@@ -162,15 +170,16 @@ class AlohaDataset(Dataset):
                       f"{len(self.lerobot_dataset)} x {obs_horizon} frames ... "
                       f"(first run only, ~5-6 min)")
                 n = len(self.lerobot_dataset)
-                num_cams = len(self.CAMERA_KEYS)
+                num_cams = len(self.camera_keys)
                 # Allocate: (N, T, Num_Cameras, 3, H, W)
                 self.cached_images = torch.zeros(
                     (n, obs_horizon, num_cams, 3, image_size, image_size), dtype=torch.float16
                 )
-                for i in tqdm(range(n), desc="Multi-View Prefetch", ncols=80):
+                for i in tqdm(range(n), desc="Image RAM Caching", ncols=80):
                     item = self.lerobot_dataset[i]
                     batch_view = []
-                    for k in self.CAMERA_KEYS:
+                    for k in self.camera_keys:
+                        raw = item[k] # (T, 3, H_orig, W_orig)
                         raw = item[k] # (T, 3, H_orig, W_orig)
                         if raw.dtype != torch.float32: raw = raw.float()
                         if raw.max() > 1.5: raw = raw / 255.0

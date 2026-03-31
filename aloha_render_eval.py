@@ -37,6 +37,8 @@ def parse_args():
     parser.add_argument("--ddim_steps", type=int, default=10, help="DDIM inference steps")
     parser.add_argument("--pred_horizon", type=int, default=16)
     parser.add_argument("--obs_horizon", type=int, default=4)
+    parser.add_argument("--image_size", type=int, default=128)
+    parser.add_argument("--patch_size", type=int, default=8)
     parser.add_argument("--execute_steps", type=int, default=8, help="Steps to execute per chunk")
     return parser.parse_args()
 
@@ -62,14 +64,15 @@ def main():
     
     # 3. Load Model
     model = DiffusionPolicy(
-        action_dim=dataset.action_dim,
-        state_dim=dataset.state_dim,
-        embed_dim=512,
-        num_heads=8,
-        num_blocks=12,
-        use_image=True,
-        image_size=96,
-        patch_size=16
+        action_dim  = dataset.action_dim,
+        state_dim   = dataset.state_dim,
+        embed_dim   = 512,
+        num_heads   = 8,
+        num_blocks  = 12,
+        use_image   = True,
+        image_size  = args.image_size,
+        patch_size  = args.patch_size,
+        use_checkpoint = False # Not needed for eval
     ).to(DEVICE)
 
     if not os.path.exists(args.checkpoint):
@@ -89,10 +92,10 @@ def main():
     )
     scheduler.set_timesteps(args.ddim_steps)
 
-    # 5. Image Transformation (Match training: resize to 96x96)
+    # 5. Image Transformation
     img_transform = T.Compose([
         T.ToPILImage(),
-        T.Resize((96, 96)),
+        T.Resize((args.image_size, args.image_size)),
         T.ToTensor(),
     ])
 
@@ -104,22 +107,20 @@ def main():
     # ---------------------------------------------------------------- #
     # 5. Observation Handling
     # ---------------------------------------------------------------- #
-    def get_obs_data(obs_dict):
+    def get_obs_data(obs_dict, cam_keys):
         # 1. State: (1, 14) -> (14,)
         s_val = obs_dict["agent_pos"][0]
         state = s_val.cpu().numpy() if torch.is_tensor(s_val) else s_val
         
-        # 2. Images: Top, Left Wrist, Right Wrist
-        # Each in obs_dict["pixels"] is (1, H, W, 3)
-        cam_keys = ["top", "left_wrist", "right_wrist"]
+        # 2. Dynamic Images
+        # dataset.camera_keys format: "observation.images.top" -> key "top" in env
         img_tensors = []
-        for k in cam_keys:
-            raw = obs_dict["pixels"][k][0] # (H, W, 3)
-            img_tensors.append(img_transform(raw)) # (3, 96, 96)
+        for full_key in cam_keys:
+            cam_name = full_key.split(".")[-1]
+            raw = obs_dict["pixels"][cam_name][0]
+            img_tensors.append(img_transform(raw))
         
-        # Stack to (3, 3, 96, 96) where 3 is num_cameras
-        imgs_combined = torch.stack(img_tensors, dim=0)
-        
+        imgs_combined = torch.stack(img_tensors, dim=0) # (num_cameras, 3, 128, 128)
         return state, imgs_combined
 
     # ---------------------------------------------------------------- #
@@ -132,7 +133,7 @@ def main():
         print(f"\n[aloha_render] Starting Episode {ep+1}/{args.num_episodes} ...")
 
         obs, _ = env.reset()
-        state, img_tensor = get_obs_data(obs)
+        state, img_tensor = get_obs_data(obs, dataset.camera_keys)
 
         # Buffers to store history (obs_horizon)
         state_buffer = collections.deque([state] * args.obs_horizon, maxlen=args.obs_horizon)
@@ -172,7 +173,7 @@ def main():
                 action = action_seq[i]
                 obs, _, terminated, truncated, _ = env.step(torch.from_numpy(action).unsqueeze(0))
                 
-                state, img_tensor = get_obs_data(obs)
+                state, img_tensor = get_obs_data(obs, dataset.camera_keys)
                 state_buffer.append(state)
                 image_buffer.append(img_tensor)
                 

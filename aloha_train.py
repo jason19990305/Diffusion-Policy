@@ -37,12 +37,12 @@ if __name__ == "__main__":
     DEPTH      = 12             # Number of Transformer blocks
 
     # Image settings (matched to AlohaDataset)
-    IMAGE_SIZE  = 96            # Resize target: 96 x 96
-    PATCH_SIZE  = 16            # patch_size=16 -> (96/16)^2 = 36 patches/image
-    IN_CHANNELS = 3             # RGB
+    IMAGE_SIZE  = 128           
+    PATCH_SIZE  = 8             # Each img: (128/8)^2 = 256 patches
+    IN_CHANNELS = 3             
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--batch_size",  type=int, default=128)
+    parser.add_argument("--batch_size",  type=int, default=32)
     parser.add_argument("--total_steps", type=int, default=50000)
     parser.add_argument("--lr",          type=float, default=2e-4)
     args = parser.parse_args()
@@ -94,15 +94,12 @@ if __name__ == "__main__":
         in_channels = IN_CHANNELS,
         image_size  = IMAGE_SIZE,
         patch_size  = PATCH_SIZE,
+        use_checkpoint = True,  # 啟用梯度檢查點以節省顯存
     ).to(DEVICE)
 
     # Token sequence per sample:
-    #   image : obs_horizon * num_cameras * (image_size/patch_size)^2 = 4 * 3 * 36 = 432
-    #   state : obs_horizon                              = 4
-    #   time  : 1
-    #   action: pred_horizon                             = 16
-    #   TOTAL : 453 tokens
-    num_cameras = 3
+    #   image : obs_horizon * num_cameras * (image_size/patch_size)^2
+    num_cameras = len(dataset.camera_keys)
     total_tokens = OBS_HORIZON * num_cameras * (IMAGE_SIZE // PATCH_SIZE) ** 2 + OBS_HORIZON + 1 + PRED_HORIZON
     print(f"[aloha_train] Transformer sequence length: {total_tokens} tokens")
 

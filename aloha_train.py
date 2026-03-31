@@ -45,6 +45,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size",  type=int, default=32)
     parser.add_argument("--total_steps", type=int, default=50000)
     parser.add_argument("--lr",          type=float, default=2e-4)
+    parser.add_argument("--num_workers", type=int, default=0) 
+
     args = parser.parse_args()
 
     # Training settings
@@ -71,7 +73,7 @@ if __name__ == "__main__":
         dataset,
         batch_size  = BATCH_SIZE,
         shuffle     = True,
-        num_workers = 0,        # Set to 0 to eliminate WSL/multiprocessing lag
+        num_workers = args.num_workers,        # Set to 0 to eliminate WSL/multiprocessing lag
         pin_memory  = True,
         drop_last=True,
         persistent_workers=False,

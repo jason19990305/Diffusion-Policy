@@ -36,6 +36,5 @@ stdbuf -oL python aloha_train.py \
     --total_steps "$STEPS" \
     --num_workers "$WORKERS" \
     --save_interval "$SAVE" \
-    --use_amp True  # 建議在 python 裡面實作自動混合精度 (FP16/BF16)
 
 echo "✅ 訓練任務已完成"

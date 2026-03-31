@@ -31,7 +31,8 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str, default="checkpoints/aloha_diffusion.pth",
                         help="Path to the model checkpoint (.pth)")
     parser.add_argument("--output", type=str, default="eval_aloha.mp4",
-                        help="Output video filename")
+                        help="Output video filename (will be indexed if num_episodes > 1)")
+    parser.add_argument("--num_episodes", type=int, default=5, help="Number of episodes to render")
     parser.add_argument("--fps", type=int, default=50, help="Simulation FPS")
     parser.add_argument("--ddim_steps", type=int, default=10, help="DDIM inference steps")
     parser.add_argument("--pred_horizon", type=int, default=16)
@@ -104,94 +105,106 @@ def main():
     # 5. Observation Handling
     # ---------------------------------------------------------------- #
     def get_obs_data(obs_dict):
-        # State: (1, 14) -> (14,)
+        # 1. State: (1, 14) -> (14,)
         s_val = obs_dict["agent_pos"][0]
         state = s_val.cpu().numpy() if torch.is_tensor(s_val) else s_val
         
-        # Image: (1, H, W, 3) -> (H, W, 3) -> (3, 96, 96)
-        i_val = obs_dict["pixels"]["top"][0]
-        img_raw = i_val.cpu().numpy() if torch.is_tensor(i_val) else i_val
+        # 2. Images: Top, Left Wrist, Right Wrist
+        # Each in obs_dict["pixels"] is (1, H, W, 3)
+        cam_keys = ["top", "left_wrist", "right_wrist"]
+        img_tensors = []
+        for k in cam_keys:
+            raw = obs_dict["pixels"][k][0] # (H, W, 3)
+            img_tensors.append(img_transform(raw)) # (3, 96, 96)
         
-        return state, img_transform(img_raw)
-
-    obs, _ = env.reset()
-    state, img_tensor = get_obs_data(obs)
-
-    # Buffers to store history (obs_horizon = 2)
-    state_buffer = collections.deque([state] * args.obs_horizon, maxlen=args.obs_horizon)
-    image_buffer = collections.deque([img_tensor] * args.obs_horizon, maxlen=args.obs_horizon)
-
-    frames = [] # To save video
-    max_steps, current_step = 400, 0
-    pbar = tqdm(total=max_steps, desc="Simulating ALOHA")
-
-    while current_step < max_steps:
-        # Prepare Tensors
-        # Normalized State: (1, obs_horizon, 14)
-        n_obs = dataset.state_normalizer.normalize(np.stack(state_buffer))
-        obs_tensor = torch.from_numpy(n_obs).float().unsqueeze(0).to(DEVICE)
+        # Stack to (3, 3, 96, 96) where 3 is num_cameras
+        imgs_combined = torch.stack(img_tensors, dim=0)
         
-        # Images: (1, obs_horizon, 3, 96, 96)
-        imgs_tensor = torch.stack(list(image_buffer)).unsqueeze(0).to(DEVICE)
+        return state, imgs_combined
 
-        # DDIM Inference
-        noised_actions = torch.randn((1, args.pred_horizon, dataset.action_dim), device=DEVICE)
-        with torch.no_grad():
-            for t in scheduler.timesteps:
-                noise = model(
-                    observations=obs_tensor,
-                    diffusion_steps=torch.full((1,), t, device=DEVICE, dtype=torch.long),
-                    noised_actions=noised_actions,
-                    images=imgs_tensor
-                )
-                noised_actions = scheduler.step(noise, t, noised_actions).prev_sample
-        
-        # Unnormalize actions: (16, 14)
-        action_seq = dataset.action_normalizer.unnormalize(noised_actions.squeeze(0).cpu().numpy())
+    # ---------------------------------------------------------------- #
+    # 6. Multi-Episode Loop                                            #
+    # ---------------------------------------------------------------- #
+    base_output, ext = os.path.splitext(args.output)
 
-        # Execute Receding Horizon steps
-        for i in range(args.execute_steps):
-            if current_step >= max_steps: break
-            
-            action = action_seq[i]
-            obs, _, terminated, truncated, _ = env.step(torch.from_numpy(action).unsqueeze(0))
-            
-            # Update buffers with new observation
-            state, img_tensor = get_obs_data(obs)
-            state_buffer.append(state)
-            image_buffer.append(img_tensor)
-            
-            # Record frame (High res for video)
-            # Depending on gym_aloha, render() might be needed or images are in obs
-            # If render() is rgb_array, it returns the frame.
-            frame = env.render() 
-            if frame is not None:
-                # If vectorized env returns a list of frames, get the first one
-                if isinstance(frame, (list, tuple)): frame = frame[0]
-                frames.append(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-            
-            current_step += 1
-            pbar.update(1)
+    for ep in range(args.num_episodes):
+        out_path = f"{base_output}_{ep}{ext}" if args.num_episodes > 1 else args.output
+        print(f"\n[aloha_render] Starting Episode {ep+1}/{args.num_episodes} ...")
 
-            if terminated.any() or truncated.any():
-                print("\n[aloha_render] Episode finished early.")
-                current_step = max_steps # break outer loop
-                break
+        obs, _ = env.reset()
+        state, img_tensor = get_obs_data(obs)
+
+        # Buffers to store history (obs_horizon)
+        state_buffer = collections.deque([state] * args.obs_horizon, maxlen=args.obs_horizon)
+        image_buffer = collections.deque([img_tensor] * args.obs_horizon, maxlen=args.obs_horizon)
+
+        frames = [] # To save video
+        max_steps, current_step = 400, 0
+        pbar = tqdm(total=max_steps, desc=f"Ep {ep}")
+
+        while current_step < max_steps:
+            # Prepare Tensors
+            # Normalized State: (1, obs_horizon, 14)
+            n_obs = dataset.state_normalizer.normalize(np.stack(state_buffer))
+            obs_tensor = torch.from_numpy(n_obs).float().unsqueeze(0).to(DEVICE)
+            
+            # Images: (1, obs_horizon, num_cameras, 3, 96, 96)
+            imgs_tensor = torch.stack(list(image_buffer)).unsqueeze(0).to(DEVICE)
+
+            # DDIM Inference
+            noised_actions = torch.randn((1, args.pred_horizon, dataset.action_dim), device=DEVICE)
+            with torch.no_grad():
+                for t in scheduler.timesteps:
+                    noise = model(
+                        observations=obs_tensor,
+                        diffusion_steps=torch.full((1,), t, device=DEVICE, dtype=torch.long),
+                        noised_actions=noised_actions,
+                        images=imgs_tensor
+                    )
+                    noised_actions = scheduler.step(noise, t, noised_actions).prev_sample
+            
+            action_seq = dataset.action_normalizer.unnormalize(noised_actions.squeeze(0).cpu().numpy())
+
+            # Execute Receding Horizon steps
+            for i in range(args.execute_steps):
+                if current_step >= max_steps: break
+                
+                action = action_seq[i]
+                obs, _, terminated, truncated, _ = env.step(torch.from_numpy(action).unsqueeze(0))
+                
+                state, img_tensor = get_obs_data(obs)
+                state_buffer.append(state)
+                image_buffer.append(img_tensor)
+                
+                frame = env.render() 
+                if frame is not None:
+                    if isinstance(frame, (list, tuple)): frame = frame[0]
+                    frames.append(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                
+                current_step += 1
+                pbar.update(1)
+
+                if terminated.any() or truncated.any():
+                    print(f"\n[aloha_render] Episode {ep} finished early.")
+                    current_step = max_steps 
+                    break
+
+        pbar.close()
+
+        # Save Video for this episode
+        if len(frames) > 0:
+            h, w, _ = frames[0].shape
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(out_path, fourcc, args.fps, (w, h))
+            for f in frames:
+                out.write(f)
+            out.release()
+            print(f"[aloha_render] Video saved to: {out_path}")
+        else:
+            print(f"[aloha_render] Error: No frames collected for episode {ep}.")
 
     env.close()
-    pbar.close()
-
-    # 6. Save Video
-    if len(frames) > 0:
-        h, w, _ = frames[0].shape
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(args.output, fourcc, args.fps, (w, h))
-        for f in frames:
-            out.write(f)
-        out.release()
-        print(f"\n[aloha_render] Video saved to: {args.output}")
-    else:
-        print("\n[aloha_render] Error: No frames collected.")
+    print("\n[aloha_render] All episodes completed.")
 
 
 if __name__ == "__main__":

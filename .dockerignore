@@ -1,9 +1,0 @@
-# Ignore large data and artifacts
-cache/
-checkpoints/
-*.mp4
-*.pth
-.git/
-__pycache__/
-*.pyc
-.ipynb_checkpoints/

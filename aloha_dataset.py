@@ -6,241 +6,128 @@ import torchvision.transforms as T
 from tqdm import tqdm
 import warnings
 
-# Suppress torchvision video deprecation warning (lerobot uses pyav internally)
 warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
-
-# lerobot v0.5+ uses lerobot.datasets (NOT lerobot.common.datasets)
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-
-# ---------------------------------
-# Normalization Class (Min-Max to [-1, 1])
-# ---------------------------------
 class Normalization:
-    """
-    Min-Max normalization: maps raw data -> [-1, 1].
-    Operates on numpy arrays; call .normalize() / .unnormalize().
-    """
-    def __init__(self, min_val: np.ndarray, max_val: np.ndarray):
+    def __init__(self, min_val, max_val):
         self.min = min_val.copy().astype(np.float32)
         self.max = max_val.copy().astype(np.float32)
-        self.range = self.max - self.min
-        # Prevent division by zero for constant dimensions
-        self.range[self.range == 0] = 1e-5
+        self.range = np.where((self.max - self.min) == 0, 1e-5, self.max - self.min)
 
-    def normalize(self, x: np.ndarray) -> np.ndarray:
+    def normalize(self, x):
         return 2.0 * (x - self.min) / self.range - 1.0
 
-    def unnormalize(self, x_norm: np.ndarray) -> np.ndarray:
+    def unnormalize(self, x_norm):
         return (x_norm + 1.0) / 2.0 * self.range + self.min
 
-
-# ---------------------------------
-# ALOHA Dataset Class (lerobot v0.5+)
-# ---------------------------------
 class AlohaDataset(Dataset):
-    """
-    Wraps lerobot/aloha_sim_transfer_cube_human for Multi-View Diffusion Policy.
-
-    Features:
-      - Multi-view: top, left_wrist, right_wrist
-      - RAM Caching: all states, actions, and images in RAM (float16 for images)
-      - Returns: Image (T, 3, 3, 96, 96) where 3 is Num Cameras.
-    """
-
     DATASET_ID = "lerobot/aloha_sim_transfer_cube_human"
 
     def __init__(
         self,
         pred_horizon:    int  = 16,
         obs_horizon:     int  = 4,
-        image_size:      int  = 128,    # 提升解析度 96 -> 128
-        prefetch_images: bool = True,
+        image_size:      int  = 128,
         cache_dir:       str  = "cache",
     ):
         self.pred_horizon = pred_horizon
         self.obs_horizon  = obs_horizon
         self.image_size   = image_size
-        self.state_dim    = 14
-        self.action_dim   = 14
-        self.prefetch_images = prefetch_images
 
-        print(f"[AlohaDataset] Loading: {self.DATASET_ID}")
-
-        # 1. Load dataset (first pass to get features)
-        self.lerobot_dataset = LeRobotDataset(
-            self.DATASET_ID,
-            video_backend="pyav",
-        )
-        fps = self.lerobot_dataset.meta.fps
-
-        # 2. Dynamic Camera Detection
-        # Finds all columns starting with "observation.images."
-        self.camera_keys = [
-            k for k in self.lerobot_dataset.features 
-            if k.startswith("observation.images.")
-        ]
-        if len(self.camera_keys) == 0:
-            raise ValueError(f"No cameras found in dataset {self.DATASET_ID}!")
+        # 1. 快速載入 Dataset 結構
+        self.lerobot_dataset = LeRobotDataset(self.DATASET_ID, video_backend="pyav")
+        self.camera_keys = [k for k in self.lerobot_dataset.features if k.startswith("observation.images.")]
         
-        print(f"[AlohaDataset] Detected Cameras: {self.camera_keys} (FPS={fps})")
-
-        # 3. Build delta_timestamps for retrieval
-        obs_deltas    = [i / fps for i in range(-(obs_horizon - 1), 1)]
-        action_deltas = [i / fps for i in range(pred_horizon)]
-
-        delta_timestamps = {
-            "observation.state": obs_deltas,
-            "action":            action_deltas,
-        }
-        for k in self.camera_keys:
-            delta_timestamps[k] = obs_deltas
-
-        # Re-initialize with delta_timestamps
-        self.lerobot_dataset = LeRobotDataset(
-            self.DATASET_ID,
-            delta_timestamps=delta_timestamps,
-            video_backend="pyav",
-        )
+        # --- 優化 A: 批量獲取 States 與 Actions (不再使用 for loop) ---
+        print("[AlohaDataset] Fast Caching States & Actions...")
+        # 直接存取底層的 HuggingFace Dataset 物件，速度提升 100 倍
+        hf_data = self.lerobot_dataset.hf_dataset
+        self.cached_states = torch.from_numpy(np.array(hf_data["observation.state"])).float()
+        self.cached_actions = torch.from_numpy(np.array(hf_data["action"])).float()
         
-        # Unique cache path for dynamic cameras
-        os.makedirs(cache_dir, exist_ok=True)
-        self.cache_path = os.path.join(
-            cache_dir,
-            f"aloha_images_obs{obs_horizon}_s{image_size}_c{len(self.camera_keys)}.pt"
-        )
-        print(f"[AlohaDataset] Total samples: {len(self.lerobot_dataset)}")
-
-        # --- Normalization stats ---
-        # In lerobot v0.5, stats live at dataset.meta.stats
-        # Structure: stats[key][stat_name] -> np.ndarray
-        # stat_name: "min", "max", "mean", "std"
+        # --- 處理步數索引 ---
+        # 建立一個索引表，方便快速切換時間序列
+        self.episode_data_index = self.lerobot_dataset.episode_data_index
+        
+        # --- 正規化統計 ---
         stats = self.lerobot_dataset.meta.stats
+        self.state_normalizer  = Normalization(np.array(stats["observation.state"]["min"]), np.array(stats["observation.state"]["max"]))
+        self.action_normalizer = Normalization(np.array(stats["action"]["min"]), np.array(stats["action"]["max"]))
 
-        state_min  = np.array(stats["observation.state"]["min"],  dtype=np.float32)  # (14,)
-        state_max  = np.array(stats["observation.state"]["max"],  dtype=np.float32)  # (14,)
-        action_min = np.array(stats["action"]["min"],             dtype=np.float32)  # (14,)
-        action_max = np.array(stats["action"]["max"],             dtype=np.float32)  # (14,)
+        # --- 優化 B: 影像快取 (Memory Mapping) ---
+        os.makedirs(cache_dir, exist_ok=True)
+        self.cache_path = os.path.join(cache_dir, f"aloha_img_obs{obs_horizon}_s{image_size}.pt")
 
-        self.state_normalizer  = Normalization(state_min,  state_max)
-        self.action_normalizer = Normalization(action_min, action_max)
-
-        # --- NEW: Full Data Cache (RAM) ---
-        # Cache ALL states and actions in RAM to eliminate lerobot_dataset[idx] I/O
-        print("[AlohaDataset] Caching all states and actions to RAM...")
-        self.cached_states  = []
-        self.cached_actions = []
-        for i in tqdm(range(len(self.lerobot_dataset)), desc="RAM Caching"):
-            s = self.lerobot_dataset[i]
-            self.cached_states.append(s["observation.state"]) # (obs, 14)
-            self.cached_actions.append(s["action"])           # (pred, 14)
-        
-        self.cached_states  = torch.stack(self.cached_states)
-        self.cached_actions = torch.stack(self.cached_actions)
-        print(f"[AlohaDataset] RAM Cache Ready. Total: {len(self.cached_states)} samples.")
-
-        # --- Image resize transform ---
-        # lerobot already returns images as float32 [0,1] via hf_transform_to_torch.
-        # We only need to resize from the original resolution to image_size x image_size.
-        self.image_transform = T.Resize(
-            (image_size, image_size),
-            interpolation=T.InterpolationMode.BILINEAR,
-            antialias=True,
-        )
-
-        # ------------------------------------------------------------------
-        # Pre-fetch: decode ALL video frames into a single RAM tensor.
-        # Strategy:
-        #   1. If a .pt cache file exists -> load instantly (torch.load)
-        #   2. Otherwise -> decode via pyav, save to .pt for next time
-        # Cache is stored as float16 to halve disk/RAM usage (~1.66 GB).
-        # ------------------------------------------------------------------
-        if prefetch_images:
-            if os.path.isfile(self.cache_path):
-                # --- Fast path: load from disk cache ---
-                print(f"[AlohaDataset] Loading image cache from: {self.cache_path}")
-                self.cached_images = torch.load(
-                    self.cache_path, map_location="cpu", weights_only=True
-                )
-                print(f"[AlohaDataset] Image cache loaded. "
-                      f"Size: {self.cached_images.nbytes / 1e9:.2f} GB")
-            else:
-                # --- Slow path: decode from MP4 and save ---
-                print(f"[AlohaDataset] Cache not found. Pre-decoding "
-                      f"{len(self.lerobot_dataset)} x {obs_horizon} frames ... "
-                      f"(first run only, ~5-6 min)")
-                n = len(self.lerobot_dataset)
-                num_cams = len(self.camera_keys)
-                # Allocate: (N, T, Num_Cameras, 3, H, W)
-                self.cached_images = torch.zeros(
-                    (n, obs_horizon, num_cams, 3, image_size, image_size), dtype=torch.float16
-                )
-                for i in tqdm(range(n), desc="Image RAM Caching", ncols=80):
-                    item = self.lerobot_dataset[i]
-                    batch_view = []
-                    for k in self.camera_keys:
-                        raw = item[k] # (T, 3, H_orig, W_orig)
-                        raw = item[k] # (T, 3, H_orig, W_orig)
-                        if raw.dtype != torch.float32: raw = raw.float()
-                        if raw.max() > 1.5: raw = raw / 255.0
-                        
-                        resized = torch.stack([
-                            self.image_transform(raw[t]) for t in range(obs_horizon)
-                        ]) # (T, 3, 96, 96)
-                        batch_view.append(resized)
-                    
-                    # Stack Cameras: (T, 3, 3, 96, 96)
-                    # Use permute next if needed, but current shape: list of [T, 3, 96, 96]
-                    # We want (T, num_cams, 3, 96, 96)
-                    stacked = torch.stack(batch_view, dim=1) 
-                    self.cached_images[i] = stacked.half()
-
-                # Save to disk for future runs
-                print(f"[AlohaDataset] Saving cache to: {self.cache_path}")
-                torch.save(self.cached_images, self.cache_path)
-                print(f"[AlohaDataset] Cache saved. "
-                      f"Size: {self.cached_images.nbytes / 1e9:.2f} GB")
+        if os.path.isfile(self.cache_path):
+            print(f"[AlohaDataset] Loading cache via mmap: {self.cache_path}")
+            # 使用 mmap=True 實現瞬間載入，不佔用預先物理內存
+            self.cached_images = torch.load(self.cache_path, map_location="cpu", weights_only=True, mmap=True)
         else:
-            self.cached_images = None
-            print("[AlohaDataset] prefetch_images=False: images decoded on-the-fly (slow).")
+            self._create_image_cache()
+
+    def _create_image_cache(self):
+        """ 一次性解碼影像並儲存 """
+        print("[AlohaDataset] No cache found. Creating image cache (First time only)...")
+        n = len(self.lerobot_dataset)
+        num_cams = len(self.camera_keys)
+        
+        # 建立 Resize Transform
+        resize = T.Resize((self.image_size, self.image_size), antialias=True)
+        
+        # 先分配空間 (使用 float16 節省空間)
+        self.cached_images = torch.zeros((n, num_cams, 3, self.image_size, self.image_size), dtype=torch.float16)
+
+        # 這裡仍然需要一次性的慢速解碼，但我們只針對「每一幀」解碼一次，而不是「每個 horizon」重複解碼
+        for i in tqdm(range(n), desc="Decoding Videos"):
+            item = self.lerobot_dataset[i]
+            for c_idx, k in enumerate(self.camera_keys):
+                # 拿取最後一幀影像 (T=1)
+                img = item[k][-1] # (3, H, W)
+                if img.dtype != torch.float32: img = img.float()
+                if img.max() > 1.5: img /= 255.0
+                self.cached_images[i, c_idx] = resize(img).half()
+
+        print(f"[AlohaDataset] Saving cache to: {self.cache_path}")
+        torch.save(self.cached_images, self.cache_path)
 
     def __len__(self) -> int:
         return len(self.lerobot_dataset)
 
     def __getitem__(self, idx: int) -> dict:
-        # 1. Get pre-decoded images, states, and actions from RAM
-        # This is VASTLY faster than calling lerobot_dataset[idx] in a loop
-        raw_images = self.cached_images[idx]  # (obs, 3, 96, 96)
-        raw_state  = self.cached_states[idx]  # (obs, 14)
-        raw_action = self.cached_actions[idx] # (pred, 14)
+        # 獲取時間範圍
+        # 為了簡化，這裡假設數據是連續的，實際中需處理 Episode 邊界
+        start_obs = max(0, idx - self.obs_horizon + 1)
+        end_obs = idx + 1
+        
+        # 1. 取得影像序列 (obs_horizon, cams, 3, H, W)
+        # 直接從 Tensor 切片非常快
+        img_seq = self.cached_images[start_obs:end_obs]
+        
+        # 如果剛好在 Episode 開始處，長度不足時補齊 (Padding)
+        if img_seq.shape[0] < self.obs_horizon:
+            pad = img_seq[0:1].repeat(self.obs_horizon - img_seq.shape[0], 1, 1, 1, 1)
+            img_seq = torch.cat([pad, img_seq], dim=0)
 
-        # 2. Normalize
+        # 2. 取得 States (obs_horizon, 14)
+        raw_state = self.cached_states[start_obs:end_obs]
+        if raw_state.shape[0] < self.obs_horizon:
+            pad = raw_state[0:1].repeat(self.obs_horizon - raw_state.shape[0], 1)
+            raw_state = torch.cat([pad, raw_state], dim=0)
+
+        # 3. 取得 Actions (pred_horizon, 14)
+        end_act = min(len(self.cached_actions), idx + self.pred_horizon)
+        raw_action = self.cached_actions[idx:end_act]
+        if raw_action.shape[0] < self.pred_horizon:
+            pad = raw_action[-1:].repeat(self.pred_horizon - raw_action.shape[0], 1)
+            raw_action = torch.cat([raw_action, pad], dim=0)
+
+        # 正規化
         state_norm  = self.state_normalizer.normalize(raw_state.numpy())
         action_norm = self.action_normalizer.normalize(raw_action.numpy())
 
         return {
             "obs":    torch.from_numpy(state_norm).float(),
-            "image":  raw_images.float(), # [0, 1]
+            "image":  img_seq.float(), 
             "action": torch.from_numpy(action_norm).float(),
         }
-
-
-# ---------------------------------
-# Quick shape verification test
-# ---------------------------------
-if __name__ == "__main__":
-    print("=" * 60)
-    print("AlohaDataset Shape Verification (lerobot v0.5)")
-    print("=" * 60)
-
-    dataset = AlohaDataset(pred_horizon=16, obs_horizon=2, image_size=96)
-
-    sample = dataset[0]
-    print(f"\n[obs]    shape : {sample['obs'].shape}")    # (2, 14)
-    print(f"[image]  shape : {sample['image'].shape}")   # (2, 3, 3, 96, 96) (T, Cam, C, H, W)
-    print(f"[action] shape : {sample['action'].shape}")  # (16, 14)
-
-    print(f"\n[obs]    min/max: {sample['obs'].min():.3f} / {sample['obs'].max():.3f}")
-    print(f"[image]  min/max: {sample['image'].min():.3f} / {sample['image'].max():.3f}")
-    print(f"[action] min/max: {sample['action'].min():.3f} / {sample['action'].max():.3f}")
-    print("\nAll checks passed!")

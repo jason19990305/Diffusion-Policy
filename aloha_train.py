@@ -46,17 +46,17 @@ if __name__ == "__main__":
     parser.add_argument("--total_steps", type=int, default=50000)
     parser.add_argument("--lr",          type=float, default=2e-4)
     parser.add_argument("--num_workers", type=int, default=0) 
+    parser.add_argument("--save_interval", type=int,   default=5000)
 
     args = parser.parse_args()
 
     # Training settings
-    BATCH_SIZE   = args.batch_size          
-    TOTAL_STEPS  = args.total_steps        
-    LOG_INTERVAL  = 100         
-    SAVE_INTERVAL = 5000        
+    BATCH_SIZE    = args.batch_size          
+    TOTAL_STEPS   = args.total_steps        
     LR            = args.lr
-    WARMUP_STEPS  = 1000        
-
+    NUM_WORKERS   = args.num_workers
+    SAVE_INTERVAL = args.save_interval       
+    WARMUP_STEPS  = 1000
     SAVE_DIR = "checkpoints"
     os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -73,10 +73,10 @@ if __name__ == "__main__":
         dataset,
         batch_size  = BATCH_SIZE,
         shuffle     = True,
-        num_workers = args.num_workers,        # Set to 0 to eliminate WSL/multiprocessing lag
+        num_workers = NUM_WORKERS,        # Set to 0 to eliminate WSL/multiprocessing lag
         pin_memory  = True,
         drop_last=True,
-        persistent_workers=False,
+        persistent_workers = True if NUM_WORKERS > 0 else False,
     )
     print(f"[aloha_train] Dataset size: {len(dataset)} | "
           f"Batches/epoch: {len(dataloader)}")

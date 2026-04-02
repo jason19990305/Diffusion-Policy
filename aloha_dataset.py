@@ -150,3 +150,61 @@ class AlohaDataset(Dataset):
             "image":  img_seq.float(), 
             "action": torch.from_numpy(action_norm).float(),
         }
+
+
+if __name__ == "__main__":
+    from torch.utils.data import DataLoader
+
+    print("Initializing AlohaDataset...")
+    # Initialize the dataset with default parameters
+    dataset = AlohaDataset(
+        pred_horizon=16,
+        obs_horizon=4,
+        image_size=128,
+        cache_dir="test_cache"
+    )
+
+    print("\n" + "="*40)
+    print("--- Testing Single Item (__getitem__) ---")
+    print("="*40)
+    
+    # Fetch a sample from the middle of the dataset to ensure no edge-case padding issues
+    sample_idx = len(dataset) // 2 
+    sample = dataset[sample_idx]
+
+    num_cams = len(dataset.camera_keys)
+    state_dim = dataset.state_dim
+    action_dim = dataset.action_dim
+
+    print(f"Data at Index: {sample_idx}")
+    print(f"Detected Cameras: {num_cams}")
+    print(f"State Dim: {state_dim}, Action Dim: {action_dim}\n")
+
+    print(f"1. 'obs' shape:    {list(sample['obs'].shape)}")    
+    # Expected: [4, 14]
+    
+    print(f"2. 'image' shape:  {list(sample['image'].shape)}")  
+    # Expected:[4, num_cams, 3, 128, 128]
+    
+    print(f"3. 'action' shape: {list(sample['action'].shape)}") 
+    # Expected:[16, 14]
+
+    print("\n" + "="*40)
+    print("--- Testing PyTorch DataLoader (Batching) ---")
+    print("="*40)
+    
+    batch_size = 8
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    batch = next(iter(dataloader))
+
+    print(f"Batch Size: {batch_size}")
+    print(f"Batch 'obs' shape:    {list(batch['obs'].shape)}")    
+    # Expected:[8, 4, 14]
+    
+    print(f"Batch 'image' shape:  {list(batch['image'].shape)}")  
+    # Expected:[8, 4, num_cams, 3, 128, 128]
+    
+    print(f"Batch 'action' shape: {list(batch['action'].shape)}") 
+    # Expected:[8, 16, 14]
+    
+    print("\nTest completed successfully!")

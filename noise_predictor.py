@@ -228,7 +228,7 @@ class DiffusionPolicy(nn.Module):
         observations: torch.Tensor,      # (B, obs_horizon, state_dim)
         diffusion_steps: torch.Tensor,   # (B,)
         noised_actions: torch.Tensor,    # (B, pred_horizon, action_dim)
-        images: torch.Tensor = None,     # (B, obs_horizon, num_cameras, C, H, W) optional
+        images: torch.Tensor = None,     # (B, obs_horizon, C, H, W) optional
     ) -> torch.Tensor:
         
         # 1. Embed state observations: (B, obs_horizon, embed_dim)
@@ -246,16 +246,16 @@ class DiffusionPolicy(nn.Module):
         
         # 5. Patchify image and prepend as conditioning tokens
         if self.use_image and images is not None:
-            # images: (B, T_obs, num_cameras, C, H, W)
-            B, T_obs, num_cameras, C, H, W = images.shape
+            # images: (B, T_obs, C, H, W)
+            B, T_obs, C, H, W = images.shape
             
-            # Flatten B, T_obs, num_cameras to process all frames/views through patch embedder
-            imgs_flat = images.reshape(B * T_obs * num_cameras, C, H, W)
-            img_patches = self.patch_embedder(imgs_flat)  # (B*T_obs*num_cameras, num_patches, embed_dim)
+            # Flatten B, T_obs to process all frames/views through patch embedder
+            imgs_flat = images.reshape(B * T_obs, C, H, W)
+            img_patches = self.patch_embedder(imgs_flat)  # (B*T_obs, num_patches, embed_dim)
             
             # Restore and concatenate all camera patches
-            # (B, T_obs * num_cameras * num_patches, embed_dim)
-            img_patches = img_patches.reshape(B, T_obs * num_cameras * self.num_patches_per_image, self.embed_dim)
+            # (B, T_obs * num_patches, embed_dim)
+            img_patches = img_patches.reshape(B, T_obs * self.num_patches_per_image, self.embed_dim)
             
             # Prepend image tokens
             tokens = [img_patches] + tokens

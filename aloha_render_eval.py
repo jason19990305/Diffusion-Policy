@@ -33,7 +33,7 @@ def parse_args():
     parser.add_argument("--output", type=str, default="eval_aloha.mp4",
                         help="Output video filename (will be indexed if num_episodes > 1)")
     parser.add_argument("--num_episodes", type=int, default=5, help="Number of episodes to render")
-    parser.add_argument("--fps", type=int, default=50, help="Simulation FPS")
+    parser.add_argument("--fps", type=int, default=30, help="Simulation FPS")
     parser.add_argument("--ddim_steps", type=int, default=10, help="DDIM inference steps")
     parser.add_argument("--pred_horizon", type=int, default=16)
     parser.add_argument("--obs_horizon", type=int, default=4)
@@ -53,7 +53,6 @@ def main():
     dataset = AlohaDataset(
         pred_horizon=args.pred_horizon,
         obs_horizon=args.obs_horizon,
-        prefetch_images=False # Not needed for eval
     )
 
     # 2. Setup environment
@@ -86,18 +85,17 @@ def main():
 
     # 4. Setup Scheduler
     scheduler = DDIMScheduler(
-        num_train_timesteps=100,
-        beta_schedule="squaredcos_cap_v2",
-        prediction_type="epsilon"
+        num_train_timesteps = 100,
+        beta_schedule       = "squaredcos_cap_v2",
+        clip_sample         = True,
+        set_alpha_to_one    = True,
+        prediction_type     = "epsilon",
     )
     scheduler.set_timesteps(args.ddim_steps)
 
     # 5. Image Transformation
-    img_transform = T.Compose([
-        T.ToPILImage(),
-        T.Resize((args.image_size, args.image_size)),
-        T.ToTensor(),
-    ])
+    resize_transform = T.Resize((args.image_size, args.image_size), antialias=True)
+
 
     # ---------------------------------------------------------------- #
     # Execution Loop                                                     #
@@ -114,14 +112,17 @@ def main():
         
         # 2. Dynamic Images
         # dataset.camera_keys format: "observation.images.top" -> key "top" in env
-        img_tensors = []
-        for full_key in cam_keys:
-            cam_name = full_key.split(".")[-1]
-            raw = obs_dict["pixels"][cam_name][0]
-            img_tensors.append(img_transform(raw))
+        cam_name = cam_keys.split(".")[-1]
+        raw = obs_dict["pixels"][cam_name][0]
+        img_tensor = raw.clone().detach().float() if torch.is_tensor(raw) else torch.from_numpy(raw).float()
+        # (H, W, 3) -> (3, H, W)
+        img_tensor = img_tensor.permute(2, 0, 1)
+        # [0,255] -> [0,1]
+        img_tensor /= 255.0
+        # resize to (image_size, image_size)
+        img_tensor = resize_transform(img_tensor)
         
-        imgs_combined = torch.stack(img_tensors, dim=0) # (num_cameras, 3, 128, 128)
-        return state, imgs_combined
+        return state, img_tensor
 
     # ---------------------------------------------------------------- #
     # 6. Multi-Episode Loop                                            #
@@ -133,7 +134,7 @@ def main():
         print(f"\n[aloha_render] Starting Episode {ep+1}/{args.num_episodes} ...")
 
         obs, _ = env.reset()
-        state, img_tensor = get_obs_data(obs, dataset.camera_keys)
+        state, img_tensor = get_obs_data(obs, dataset.cam_key)
 
         # Buffers to store history (obs_horizon)
         state_buffer = collections.deque([state] * args.obs_horizon, maxlen=args.obs_horizon)
@@ -149,7 +150,7 @@ def main():
             n_obs = dataset.state_normalizer.normalize(np.stack(state_buffer))
             obs_tensor = torch.from_numpy(n_obs).float().unsqueeze(0).to(DEVICE)
             
-            # Images: (1, obs_horizon, num_cameras, 3, 96, 96)
+            # Images: (1, obs_horizon, 3, 96, 96)
             imgs_tensor = torch.stack(list(image_buffer)).unsqueeze(0).to(DEVICE)
 
             # DDIM Inference
@@ -173,7 +174,7 @@ def main():
                 action = action_seq[i]
                 obs, _, terminated, truncated, _ = env.step(torch.from_numpy(action).unsqueeze(0))
                 
-                state, img_tensor = get_obs_data(obs, dataset.camera_keys)
+                state, img_tensor = get_obs_data(obs, dataset.cam_key)
                 state_buffer.append(state)
                 image_buffer.append(img_tensor)
                 
@@ -196,6 +197,7 @@ def main():
         if len(frames) > 0:
             h, w, _ = frames[0].shape
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+
             out = cv2.VideoWriter(out_path, fourcc, args.fps, (w, h))
             for f in frames:
                 out.write(f)

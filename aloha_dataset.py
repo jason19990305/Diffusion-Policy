@@ -15,18 +15,21 @@ class Normalization:
     def __init__(self, min_val, max_val):
         self.min = min_val.copy().astype(np.float32)
         self.max = max_val.copy().astype(np.float32)
+        # Avoid division by zero
         self.range = np.where((self.max - self.min) == 0, 1e-5, self.max - self.min)
 
     def normalize(self, x):
+        """Map values to [-1, 1] range."""
         return 2.0 * (x - self.min) / self.range - 1.0
 
     def unnormalize(self, x_norm):
+        """Map values back to original range."""
         return (x_norm + 1.0) / 2.0 * self.range + self.min
 
 class AlohaDataset(Dataset):
     """
-    Optimized ALOHA Dataset for LeRobot v0.5.x.
-    Fixed image dimension handling and manual episode boundary detection.
+    Optimized ALOHA Dataset (Single Camera Version).
+    Simplified for single-view efficiency by removing the camera dimension.
     """
     DATASET_ID = "lerobot/aloha_sim_transfer_cube_human"
 
@@ -43,10 +46,11 @@ class AlohaDataset(Dataset):
 
         # 1. Load basic dataset structure
         self.lerobot_dataset = LeRobotDataset(self.DATASET_ID, video_backend="pyav")
-        self.camera_keys = [k for k in self.lerobot_dataset.features if k.startswith("observation.images.")]
+        # Extract the first camera key available (since only 1 camera is used)
+        self.cam_key = [k for k in self.lerobot_dataset.features if k.startswith("observation.images.")][0]
         hf_data = self.lerobot_dataset.hf_dataset
 
-        # 2. Manual Episode Boundary Detection (Bypassing unstable API attributes)
+        # 2. Manual Episode Boundary Detection
         # We calculate boundaries from the 'episode_index' column directly.
         print("[AlohaDataset] Analyzing episode boundaries...")
         ep_ids = np.array(hf_data["episode_index"])
@@ -66,50 +70,44 @@ class AlohaDataset(Dataset):
         self.state_normalizer  = Normalization(np.array(stats["observation.state"]["min"]), np.array(stats["observation.state"]["max"]))
         self.action_normalizer = Normalization(np.array(stats["action"]["min"]), np.array(stats["action"]["max"]))
 
-        # 5. Image Cache (Memory-Mapped for H100 efficiency)
+        # 5. Image Cache (Memory-Mapped for efficiency)
         os.makedirs(cache_dir, exist_ok=True)
-        self.cache_path = os.path.join(cache_dir, f"aloha_img_obs{obs_horizon}_s{image_size}.pt")
+        # Using a distinct name for single-camera cache
+        self.cache_path = os.path.join(cache_dir, f"aloha_single_img_obs{obs_horizon}_s{image_size}.pt")
 
         if os.path.isfile(self.cache_path):
-            print(f"[AlohaDataset] Loading image cache via mmap: {self.cache_path}")
+            print(f"[AlohaDataset] Loading single-cam cache via mmap: {self.cache_path}")
             self.cached_images = torch.load(self.cache_path, map_location="cpu", weights_only=True, mmap=True)
         else:
             self._create_image_cache()
             
-        # --- Add these two lines at the end of __init__ ---
-        self.state_dim = self.cached_states.shape[-1]   # Should be 14 for ALOHA
-        self.action_dim = self.cached_actions.shape[-1] # Should be 14 for ALOHA
+        self.state_dim = self.cached_states.shape[-1]   # 14 for ALOHA
+        self.action_dim = self.cached_actions.shape[-1] # 14 for ALOHA
         print(f"[AlohaDataset] Initialized with state_dim={self.state_dim}, action_dim={self.action_dim}")
 
     def _create_image_cache(self):
         """Decoding and resizing frames. Stored as FP16 to minimize disk/RAM usage."""
         print("[AlohaDataset] No cache found. Creating image cache...")
         n = len(self.lerobot_dataset)
-        num_cams = len(self.camera_keys)
         resize = T.Resize((self.image_size, self.image_size), antialias=True)
         
-        # Pre-allocate (N, Cams, C, H, W)
-        self.cached_images = torch.zeros((n, num_cams, 3, self.image_size, self.image_size), dtype=torch.float16)
+        # Pre-allocate (N, C, H, W) - Note: No num_cams dimension here
+        self.cached_images = torch.zeros((n, 3, self.image_size, self.image_size), dtype=torch.float16)
 
         for i in tqdm(range(n), desc="Decoding Video Frames"):
-            item = self.lerobot_dataset[i]
-            for c_idx, k in enumerate(self.camera_keys):
-                # FIXED: Correctly handle image dimensions
-                img = item[k] # Shape should be (C, H, W) or (T, C, H, W)
-                
-                # If the dataset returns a sequence (T, C, H, W), take the last frame
-                if img.ndim == 4:
-                    img = img[-1]
-                
-                # Ensure img is (C, H, W) before resizing
-                if img.ndim == 2: # (H, W) -> (1, H, W)
-                    img = img.unsqueeze(0)
-                
-                if img.dtype != torch.float32: img = img.float()
-                if img.max() > 1.5: img /= 255.0 # Normalizing to [0, 1]
-                
-                # Resizing and converting to FP16
-                self.cached_images[i, c_idx] = resize(img).half()
+            # Fetch raw frame
+            img = self.lerobot_dataset[i][self.cam_key]
+            
+            # If the dataset returns a sequence (T, C, H, W), take the last frame
+            if img.ndim == 4:
+                img = img[-1]
+            
+            # Basic preprocessing
+            if img.dtype != torch.float32: img = img.float()
+            if img.max() > 1.5: img /= 255.0 # Normalize to [0, 1]
+            
+            # Resizing and converting to FP16
+            self.cached_images[i] = resize(img).half()
 
         print(f"[AlohaDataset] Saving cache to: {self.cache_path}")
         torch.save(self.cached_images, self.cache_path)
@@ -123,88 +121,50 @@ class AlohaDataset(Dataset):
         start_idx = self.episode_data_index[ep_id]
         end_idx = self.episode_data_index[ep_id + 1]
 
-        # 1. Observation Slicing (with Episode Start Padding)
+        # 1. Slice Observation Window (with Episode Start Padding)
         s_lookback = max(start_idx, idx - self.obs_horizon + 1)
         img_seq = self.cached_images[s_lookback : idx + 1]
         raw_state = self.cached_states[s_lookback : idx + 1]
         
+        # Padding: Repeat the first frame if window is near episode start
         if img_seq.shape[0] < self.obs_horizon:
             pad_len = self.obs_horizon - img_seq.shape[0]
-            img_seq = torch.cat([img_seq[0:1].expand(pad_len, -1, -1, -1, -1), img_seq], dim=0)
+            img_seq = torch.cat([img_seq[0:1].expand(pad_len, -1, -1, -1), img_seq], dim=0)
             raw_state = torch.cat([raw_state[0:1].expand(pad_len, -1), raw_state], dim=0)
 
-        # 2. Action Slicing (with Episode End Padding)
+        # 2. Slice Action Window (with Episode End Padding)
         e_lookforward = min(end_idx, idx + self.pred_horizon)
         raw_action = self.cached_actions[idx : e_lookforward]
         
+        # Padding: Repeat the last action if window is near episode end
         if raw_action.shape[0] < self.pred_horizon:
             pad_len = self.pred_horizon - raw_action.shape[0]
             raw_action = torch.cat([raw_action, raw_action[-1:].expand(pad_len, -1)], dim=0)
 
-        # 3. Apply Normalization
-        state_norm  = self.state_normalizer.normalize(raw_state.numpy())
-        action_norm = self.action_normalizer.normalize(raw_action.numpy())
-
+        # 3. Apply Normalization and return as dictionary
         return {
-            "obs":    torch.from_numpy(state_norm).float(),
+            "obs":    torch.from_numpy(self.state_normalizer.normalize(raw_state.numpy())).float(),
             "image":  img_seq.float(), 
-            "action": torch.from_numpy(action_norm).float(),
+            "action": torch.from_numpy(self.action_normalizer.normalize(raw_action.numpy())).float(),
         }
-
 
 if __name__ == "__main__":
     from torch.utils.data import DataLoader
 
     print("Initializing AlohaDataset...")
-    # Initialize the dataset with default parameters
-    dataset = AlohaDataset(
-        pred_horizon=16,
-        obs_horizon=4,
-        image_size=128,
-        cache_dir="test_cache"
-    )
+    dataset = AlohaDataset(pred_horizon=16, obs_horizon=4, image_size=128)
 
     print("\n" + "="*40)
-    print("--- Testing Single Item (__getitem__) ---")
+    print("--- Testing Output Shapes ---")
     print("="*40)
     
-    # Fetch a sample from the middle of the dataset to ensure no edge-case padding issues
-    sample_idx = len(dataset) // 2 
-    sample = dataset[sample_idx]
+    sample = dataset[len(dataset) // 2]
+    print(f"1. 'obs' shape:    {list(sample['obs'].shape)}    (Expected: [4, 14])")    
+    print(f"2. 'image' shape:  {list(sample['image'].shape)} (Expected: [4, 3, 128, 128])")  
+    print(f"3. 'action' shape: {list(sample['action'].shape)}   (Expected: [16, 14])") 
 
-    num_cams = len(dataset.camera_keys)
-    state_dim = dataset.state_dim
-    action_dim = dataset.action_dim
-
-    print(f"Data at Index: {sample_idx}")
-    print(f"Detected Cameras: {num_cams}")
-    print(f"State Dim: {state_dim}, Action Dim: {action_dim}\n")
-
-    print(f"1. 'obs' shape:    {list(sample['obs'].shape)}")    
-    # Expected: [4, 14]
-    
-    print(f"2. 'image' shape:  {list(sample['image'].shape)}")  
-    # Expected:[4, num_cams, 3, 128, 128]
-    
-    print(f"3. 'action' shape: {list(sample['action'].shape)}") 
-    # Expected:[16, 14]
-
-    print("\n" + "="*40)
-    print("--- Testing PyTorch DataLoader (Batching) ---")
-    print("="*40)
-    
-    batch_size = 8
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    # Batch test
+    dataloader = DataLoader(dataset, batch_size=8, shuffle=True)
     batch = next(iter(dataloader))
-
-    print(f"Batch Size: {batch_size}")
-    print(f"Batch 'obs' shape:    {list(batch['obs'].shape)}")    
-    # Expected:[8, 4, 14]
-    
-    print(f"Batch 'image' shape:  {list(batch['image'].shape)}")  
-    # Expected:[8, 4, num_cams, 3, 128, 128]
-    
-    print(f"Batch 'action' shape: {list(batch['action'].shape)}") 
-    # Expected:[8, 16, 14]
-    
+    print(f"\nBatch 'image' shape: {list(batch['image'].shape)} (Expected: [8, 4, 3, 128, 128])")
     print("\nTest completed successfully!")

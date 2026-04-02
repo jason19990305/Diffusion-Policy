@@ -43,7 +43,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size",  type=int, default=32)
-    parser.add_argument("--total_steps", type=int, default=50000)
+    parser.add_argument("--total_steps", type=int, default=1000)
     parser.add_argument("--lr",          type=float, default=2e-4)
     parser.add_argument("--num_workers", type=int, default=0) 
     parser.add_argument("--save_interval", type=int,   default=5000)
@@ -101,9 +101,8 @@ if __name__ == "__main__":
     ).to(DEVICE)
 
     # Token sequence per sample:
-    #   image : obs_horizon * num_cameras * (image_size/patch_size)^2
-    num_cameras = len(dataset.camera_keys)
-    total_tokens = OBS_HORIZON * num_cameras * (IMAGE_SIZE // PATCH_SIZE) ** 2 + OBS_HORIZON + 1 + PRED_HORIZON
+    #   image : obs_horizon * (image_size/patch_size)^2
+    total_tokens = OBS_HORIZON * (IMAGE_SIZE // PATCH_SIZE) ** 2 + OBS_HORIZON + 1 + PRED_HORIZON
     print(f"[aloha_train] Transformer sequence length: {total_tokens} tokens")
 
     model.train()

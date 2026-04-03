@@ -149,6 +149,7 @@ if __name__ == "__main__":
             # 5.1 Prepare data
             obs    = batch["obs"].to(DEVICE, non_blocking=True)     # (B, obs_horizon, 14)
             images = batch["image"].to(DEVICE, non_blocking=True)   # (B, obs_horizon, 3, H, W)
+            # Sequence:[t - obs_horizon + 1, ..., t, ..., t + pred_horizon - obs_horizon]
             actions = batch["action"].to(DEVICE, non_blocking=True) # (B, pred_horizon, 14)
 
             # 5.1 Sample random diffusion timesteps

@@ -33,7 +33,7 @@ def parse_args():
     parser.add_argument("--output", type=str, default="eval_aloha.mp4",
                         help="Output video filename (will be indexed if num_episodes > 1)")
     parser.add_argument("--num_episodes", type=int, default=5, help="Number of episodes to render")
-    parser.add_argument("--fps", type=int, default=30, help="Simulation FPS")
+    parser.add_argument("--fps", type=int, default=50, help="Simulation FPS")
     parser.add_argument("--ddim_steps", type=int, default=10, help="DDIM inference steps")
     parser.add_argument("--pred_horizon", type=int, default=16)
     parser.add_argument("--obs_horizon", type=int, default=4)
@@ -53,6 +53,7 @@ def main():
     dataset = AlohaDataset(
         pred_horizon=args.pred_horizon,
         obs_horizon=args.obs_horizon,
+        image_size=args.image_size,
     )
 
     # 2. Setup environment
@@ -98,23 +99,20 @@ def main():
 
 
     # ---------------------------------------------------------------- #
-    # Execution Loop                                                     #
-    # ---------------------------------------------------------------- #
-    obs, _ = env.reset()
-    
-    # ---------------------------------------------------------------- #
-    # 5. Observation Handling
+    # 5. Observation Handling (Updated for Tensors)
     # ---------------------------------------------------------------- #
     def get_obs_data(obs_dict, cam_keys):
         # 1. State: (1, 14) -> (14,)
         s_val = obs_dict["agent_pos"][0]
-        state = s_val.cpu().numpy() if torch.is_tensor(s_val) else s_val
+        # Keep as Tensor instead of converting to numpy
+        state = torch.as_tensor(s_val, dtype=torch.float32).cpu()
         
         # 2. Dynamic Images
-        # dataset.camera_keys format: "observation.images.top" -> key "top" in env
         cam_name = cam_keys.split(".")[-1]
         raw = obs_dict["pixels"][cam_name][0]
-        img_tensor = raw.clone().detach().float() if torch.is_tensor(raw) else torch.from_numpy(raw).float()
+        
+        # Keep as Tensor
+        img_tensor = torch.as_tensor(raw, dtype=torch.float32).cpu()
         # (H, W, 3) -> (3, H, W)
         img_tensor = img_tensor.permute(2, 0, 1)
         # [0,255] -> [0,1]
@@ -140,17 +138,20 @@ def main():
         state_buffer = collections.deque([state] * args.obs_horizon, maxlen=args.obs_horizon)
         image_buffer = collections.deque([img_tensor] * args.obs_horizon, maxlen=args.obs_horizon)
 
-        frames = [] # To save video
+        frames =[] # To save video
         max_steps, current_step = 400, 0
         pbar = tqdm(total=max_steps, desc=f"Ep {ep}")
 
         while current_step < max_steps:
-            # Prepare Tensors
-            # Normalized State: (1, obs_horizon, 14)
-            n_obs = dataset.state_normalizer.normalize(np.stack(state_buffer))
-            obs_tensor = torch.from_numpy(n_obs).float().unsqueeze(0).to(DEVICE)
+            # ----------------------------------------------------
+            # Prepare Tensors (Updated for pure PyTorch normalizer)
+            # ----------------------------------------------------
             
-            # Images: (1, obs_horizon, 3, 96, 96)
+            # Normalize State: (1, obs_horizon, 14)
+            stacked_states = torch.stack(list(state_buffer))
+            obs_tensor = dataset.state_normalizer.normalize(stacked_states).unsqueeze(0).to(DEVICE)
+            
+            # Images: (1, obs_horizon, 3, image_size, image_size)
             imgs_tensor = torch.stack(list(image_buffer)).unsqueeze(0).to(DEVICE)
 
             # DDIM Inference
@@ -165,14 +166,18 @@ def main():
                     )
                     noised_actions = scheduler.step(noise, t, noised_actions).prev_sample
             
-            action_seq = dataset.action_normalizer.unnormalize(noised_actions.squeeze(0).cpu().numpy())
-
+            # Unnormalize actions directly via TensorNormalizer
+            noised_actions_cpu = noised_actions.squeeze(0).cpu()
+            action_seq = dataset.action_normalizer.unnormalize(noised_actions_cpu)
+            
+            start_idx = args.obs_horizon - 1
             # Execute Receding Horizon steps
             for i in range(args.execute_steps):
                 if current_step >= max_steps: break
                 
-                action = action_seq[i]
-                obs, _, terminated, truncated, _ = env.step(torch.from_numpy(action).unsqueeze(0))
+                # action is a PyTorch tensor, MuJoCo env can consume it properly
+                action = action_seq[start_idx + i]
+                obs, _, terminated, truncated, _ = env.step(action.unsqueeze(0))
                 
                 state, img_tensor = get_obs_data(obs, dataset.cam_key)
                 state_buffer.append(state)

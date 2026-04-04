@@ -7,6 +7,14 @@ Uses receding horizon (predict 16, execute 8) for smooth closed-loop control.
 Usage:
     python aloha_render_eval.py --checkpoint checkpoints/aloha_diffusion_step_6000.pth
 """
+import os
+os.environ['MUJOCO_GL'] = 'egl'
+os.environ['PYOPENGL_PLATFORM'] = 'egl'
+
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+
 
 import os
 import torch
@@ -14,6 +22,7 @@ import numpy as np
 import cv2
 import collections
 import argparse
+import gc
 from tqdm import tqdm
 from diffusers import DDIMScheduler
 import torchvision.transforms as T
@@ -58,7 +67,7 @@ def main():
 
     # 2. Setup environment
     print(f"[aloha_render] Initializing ALOHA environment...")
-    env_cfg = AlohaEnv(task="AlohaInsertion-v0", render_mode="rgb_array", fps=args.fps)
+    env_cfg = AlohaEnv(task="AlohaTransferCube-v0", render_mode="rgb_array", fps=args.fps)
     envs = make_env(env_cfg)
     env = envs["aloha"][0] # Get the sync vector env
     
@@ -128,6 +137,10 @@ def main():
     base_output, ext = os.path.splitext(args.output)
 
     for ep in range(args.num_episodes):
+        # clear memory
+        gc.collect()
+        torch.cuda.empty_cache()
+
         out_path = f"{base_output}_{ep}{ext}" if args.num_episodes > 1 else args.output
         print(f"\n[aloha_render] Starting Episode {ep+1}/{args.num_episodes} ...")
 
@@ -183,10 +196,16 @@ def main():
                 state_buffer.append(state)
                 image_buffer.append(img_tensor)
                 
-                frame = env.render() 
-                if frame is not None:
-                    if isinstance(frame, (list, tuple)): frame = frame[0]
-                    frames.append(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                try:
+                    frame = env.render() 
+                    if frame is not None:
+                        # VectorEnv 可能返回 list
+                        if isinstance(frame, (list, tuple)): 
+                            frame = frame[0]
+                        frames.append(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                except Exception as e:
+                    print(f"Render warning: {e}")
+
                 
                 current_step += 1
                 pbar.update(1)

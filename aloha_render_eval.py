@@ -7,14 +7,6 @@ Uses receding horizon (predict 16, execute 8) for smooth closed-loop control.
 Usage:
     python aloha_render_eval.py --checkpoint checkpoints/aloha_diffusion_step_6000.pth
 """
-import os
-os.environ['MUJOCO_GL'] = 'egl'
-os.environ['PYOPENGL_PLATFORM'] = 'egl'
-
-os.environ['OMP_NUM_THREADS'] = '1'
-os.environ['MKL_NUM_THREADS'] = '1'
-os.environ['OPENBLAS_NUM_THREADS'] = '1'
-
 
 import os
 import torch
@@ -28,6 +20,7 @@ from diffusers import DDIMScheduler
 import torchvision.transforms as T
 
 # lerobot v0.5 API
+import gym_aloha
 from lerobot.envs.factory import make_env
 from lerobot.envs.configs import AlohaEnv
 

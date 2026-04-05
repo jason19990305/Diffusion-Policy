@@ -11,6 +11,45 @@ from diffusers import DDIMScheduler
 from trajectory_dataset import Normalization
 from trajectory_plot import generate_trajectory_forward
 
+class TemporalEnsembling:
+    """
+    Temporal Ensembling
+    Averages overlapping parts of multiple predictions to make the generated actions/trajectories smoother.
+    """
+    def __init__(self, pred_horizon, action_dim):
+        self.pred_horizon = pred_horizon
+        self.action_dim = action_dim
+        self.action_sum = np.zeros((pred_horizon, action_dim))
+        self.action_count = np.zeros((pred_horizon, 1))
+
+    def update(self, predicted_action_seq):
+        """
+        Add the currently predicted sequence into the buffer
+        """
+        self.action_sum += predicted_action_seq
+        self.action_count += 1
+
+    def get_and_shift_actions(self, n_actions):
+        """
+        Calculate the averaged actions and shift the buffer forward
+        """
+        # Prevent division by zero
+        counts = np.maximum(self.action_count[:n_actions], 1)
+        avg_actions = self.action_sum[:n_actions] / counts
+        
+        # Update and shift the buffer
+        new_sum = np.zeros_like(self.action_sum)
+        new_count = np.zeros_like(self.action_count)
+        
+        if self.pred_horizon > n_actions:
+            new_sum[:-n_actions] = self.action_sum[n_actions:]
+            new_count[:-n_actions] = self.action_count[n_actions:]
+            
+        self.action_sum = new_sum
+        self.action_count = new_count
+        
+        return avg_actions
+
 if __name__ == "__main__":
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -25,7 +64,7 @@ if __name__ == "__main__":
     # Receding Horizon parameters
     OBS_HORIZON = 8         # Increased to 8 to match training settings
     PRED_HORIZON = 16       # Usually 16 is standard for 2D trajectories
-    ACTION_HORIZON = 8      # Execute 8 steps, then replan
+    ACTION_HORIZON = 2      # Execute 2 steps, then replan (reduced for better ensembling)
     
     INFERENCE_STEPS = 50
     MAX_EPISODE_STEPS = 100 # We want the agent to walk for 100 steps
@@ -66,6 +105,9 @@ if __name__ == "__main__":
     # To record the actual path taken by the agent
     actual_trajectory = [current_state.copy()]
     
+    # Initialize Temporal Ensembling
+    temporal_ensembler = TemporalEnsembling(pred_horizon=PRED_HORIZON, action_dim=ACTION_DIM)
+    
     print("Starting closed-loop inference...")
     step_count = 0
     actual_path_len = 1
@@ -99,8 +141,8 @@ if __name__ == "__main__":
                                              sample=noised_actions)
                 noised_actions = step_result.prev_sample
 
-                # Record diffusion process for animation (e.g. every 5 steps)
-                if step_idx % 5 == 0 or step_idx == len(scheduler.timesteps) - 1:
+                # Record diffusion process for animation (e.g. every 2 steps to make the green scatter move slower/smoother)
+                if step_idx % 2 == 0 or step_idx == len(scheduler.timesteps) - 1:
                     interm_seq_norm = noised_actions.squeeze(0).cpu().numpy()
                     interm_seq = normalizer.unnormalize(interm_seq_norm)
                     animation_frames.append({
@@ -114,15 +156,20 @@ if __name__ == "__main__":
         # Unnormalize to get real coordinates
         predicted_action_seq = normalizer.unnormalize(predicted_action_seq_norm)
 
+        # Add the predicted trajectory to Temporal Ensembling for averaging
+        temporal_ensembler.update(predicted_action_seq)
+        
+        # Retrieve the smoothed ACTION_HORIZON actions
+        smoothed_actions = temporal_ensembler.get_and_shift_actions(ACTION_HORIZON)
+
         # 4.4 Execute actions (Receding Horizon)
         # We only execute the first ACTION_HORIZON steps from the prediction
         for i in range(ACTION_HORIZON):
             if step_count >= MAX_EPISODE_STEPS:
                 break
                 
-            # In our simple case, the "action" IS the target (x, y) position.
-            # In a real robot, you would do: next_state = env.step(action)
-            action = predicted_action_seq[i]
+            # Use the averaged action from Temporal Ensembling
+            action = smoothed_actions[i]
             current_state = action 
             
             # Update history and buffers
@@ -191,18 +238,18 @@ if __name__ == "__main__":
 
     # Create animation
     ani = FuncAnimation(fig, update, frames=len(animation_frames),
-                        init_func=init, blit=True, interval=100) # interval=100ms per frame
+                        init_func=init, blit=True, interval=33) # interval=33ms per frame (~30 fps)
 
     # Save as GIF using Pillow writer 
     gif_path = "diffusion_policy_trajectory.gif"
-    ani.save(gif_path, writer='pillow', fps=10, 
+    ani.save(gif_path, writer='pillow', fps=30, 
              savefig_kwargs={'transparent': False, 'facecolor': 'white'})
     
     from PIL import Image, ImageSequence
     img = Image.open(gif_path)
     frames = [frame.copy() for frame in ImageSequence.Iterator(img)]
     
-    durations = [100] * len(frames)
+    durations = [33] * len(frames)
     durations[-1] = 2000  # Last frame display for 2 seconds
     
     frames[0].save(fp=gif_path, format='GIF', append_images=frames[1:],

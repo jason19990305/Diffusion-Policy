@@ -28,6 +28,40 @@ from noise_predictor import DiffusionPolicy
 from aloha_dataset import AlohaDataset
 
 
+class TensorTemporalEnsembling:
+    """
+    Temporal Ensembling for PyTorch Tensors.
+    Averages overlapping parts of multiple predictions to make the generated actions smoother.
+    """
+    def __init__(self, pred_horizon, action_dim):
+        self.pred_horizon = pred_horizon
+        self.action_dim = action_dim
+        self.action_sum = torch.zeros((pred_horizon, action_dim))
+        self.action_count = torch.zeros((pred_horizon, 1))
+
+    def update(self, predicted_action_seq):
+        """Add the currently predicted sequence to the buffer."""
+        self.action_sum += predicted_action_seq
+        self.action_count += 1
+
+    def get_and_shift_actions(self, n_actions):
+        """Calculate the averaged actions and shift the buffer forward."""
+        counts = torch.clamp(self.action_count[:n_actions], min=1)
+        avg_actions = self.action_sum[:n_actions] / counts
+        
+        new_sum = torch.zeros_like(self.action_sum)
+        new_count = torch.zeros_like(self.action_count)
+        
+        if self.pred_horizon > n_actions:
+            new_sum[:-n_actions] = self.action_sum[n_actions:]
+            new_count[:-n_actions] = self.action_count[n_actions:]
+            
+        self.action_sum = new_sum
+        self.action_count = new_count
+        
+        return avg_actions
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Render Evaluation for ALOHA")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/aloha_diffusion.pth",
@@ -80,7 +114,7 @@ def main():
     if not os.path.exists(args.checkpoint):
         print(f"Warning: Checkpoint {args.checkpoint} not found. Trying latest...")
         # fallback to aloha_diffusion.pth if step-based name is missing
-        args.checkpoint = "checkpoints/aloha_diffusion.pth"
+        args.checkpoint = "checkpoints/aloha_diffusion_H100.pth"
 
     model.load_state_dict(torch.load(args.checkpoint, map_location=DEVICE, weights_only=True))
     model.eval()
@@ -144,6 +178,15 @@ def main():
         state_buffer = collections.deque([state] * args.obs_horizon, maxlen=args.obs_horizon)
         image_buffer = collections.deque([img_tensor] * args.obs_horizon, maxlen=args.obs_horizon)
 
+        # Initialize Temporal Ensembling
+        # The usable future actions start at index (obs_horizon - 1), 
+        # so the effective future horizon is pred_horizon - obs_horizon + 1
+        effective_horizon = args.pred_horizon - args.obs_horizon + 1
+        temporal_ensembler = TensorTemporalEnsembling(
+            pred_horizon=effective_horizon, 
+            action_dim=dataset.action_dim
+        )
+
         frames =[] # To save video
         max_steps, current_step = 400, 0
         pbar = tqdm(total=max_steps, desc=f"Ep {ep}")
@@ -177,12 +220,18 @@ def main():
             action_seq = dataset.action_normalizer.unnormalize(noised_actions_cpu)
             
             start_idx = args.obs_horizon - 1
+            future_actions = action_seq[start_idx:]  # slice only the future predictions (shape: effective_horizon x action_dim)
+            
+            # temporal ensembling update
+            temporal_ensembler.update(future_actions)
+            smoothed_actions = temporal_ensembler.get_and_shift_actions(args.execute_steps)
+            
             # Execute Receding Horizon steps
             for i in range(args.execute_steps):
                 if current_step >= max_steps: break
                 
                 # action is a PyTorch tensor, MuJoCo env can consume it properly
-                action = action_seq[start_idx + i]
+                action = smoothed_actions[i]
                 obs, _, terminated, truncated, _ = env.step(action.unsqueeze(0))
                 
                 state, img_tensor = get_obs_data(obs, dataset.cam_key)

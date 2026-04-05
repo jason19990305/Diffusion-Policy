@@ -7,6 +7,45 @@ from diffusers import DDIMScheduler
 from trajectory_dataset import Normalization
 from trajectory_plot import generate_trajectory_forward
 
+class TemporalEnsembling:
+    """
+    Temporal Ensembling
+    Averages overlapping parts of multiple predictions to make the generated actions/trajectories smoother.
+    """
+    def __init__(self, pred_horizon, action_dim):
+        self.pred_horizon = pred_horizon
+        self.action_dim = action_dim
+        self.action_sum = np.zeros((pred_horizon, action_dim))
+        self.action_count = np.zeros((pred_horizon, 1))
+
+    def update(self, predicted_action_seq):
+        """
+        Add the currently predicted sequence into the buffer
+        """
+        self.action_sum += predicted_action_seq
+        self.action_count += 1
+
+    def get_and_shift_actions(self, n_actions):
+        """
+        Calculate the averaged actions and shift the buffer forward
+        """
+        # Prevent division by zero (though practically it's >= 1 if updated)
+        counts = np.maximum(self.action_count[:n_actions], 1)
+        avg_actions = self.action_sum[:n_actions] / counts
+        
+        # Update and shift the buffer
+        new_sum = np.zeros_like(self.action_sum)
+        new_count = np.zeros_like(self.action_count)
+        
+        if self.pred_horizon > n_actions:
+            new_sum[:-n_actions] = self.action_sum[n_actions:]
+            new_count[:-n_actions] = self.action_count[n_actions:]
+            
+        self.action_sum = new_sum
+        self.action_count = new_count
+        
+        return avg_actions
+
 def main():
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -19,7 +58,12 @@ def main():
     MLP_RATIO = 4.0
     OBS_HORIZON = 8
     PRED_HORIZON = 16
-    ACTION_HORIZON = 8
+    
+    # To make the effect of Temporal Ensembling (overlap averaging) more obvious,
+    # you can set ACTION_HORIZON smaller (e.g., 1 or 2) to increase the number of overlaps.
+    # To maintain the original speed, keep it at 8.
+    ACTION_HORIZON = 2 
+    
     INFERENCE_STEPS = 50
     MAX_EPISODE_STEPS = 100
     CHECKPOINT_PATH = "checkpoints/trajectory_diffusion_policy_3000.pth"
@@ -49,6 +93,9 @@ def main():
     obs_buffer = collections.deque([current_state.copy()] * OBS_HORIZON, maxlen=OBS_HORIZON)
     actual_trajectory = [current_state.copy()]
 
+    # Initialize Temporal Ensembling
+    temporal_ensembler = TemporalEnsembling(pred_horizon=PRED_HORIZON, action_dim=ACTION_DIM)
+
     # --- 4. Closed-loop Inference ---
     print(f"Starting closed-loop inference for {MAX_EPISODE_STEPS} steps...")
     step_count = 0
@@ -73,13 +120,19 @@ def main():
         # Post-process: Unnormalize
         predicted_action_seq = normalizer.unnormalize(noised_actions.squeeze(0).cpu().numpy())
 
+        # Add the predicted trajectory to Temporal Ensembling for averaging
+        temporal_ensembler.update(predicted_action_seq)
+        
+        # Retrieve the smoothed ACTION_HORIZON actions
+        smoothed_actions = temporal_ensembler.get_and_shift_actions(ACTION_HORIZON)
+
         # Execute Actions (Receding Horizon)
         for i in range(ACTION_HORIZON):
             if step_count >= MAX_EPISODE_STEPS:
                 break
             
-            # Use predicted point as next state (simple simulator)
-            current_state = predicted_action_seq[i]
+            # Use the averaged action from Temporal Ensembling (in this env, action directly becomes next state)
+            current_state = smoothed_actions[i]
             actual_trajectory.append(current_state.copy())
             obs_buffer.append(current_state.copy())
             step_count += 1
@@ -92,18 +145,18 @@ def main():
     # Target Trajectory
     plt.plot(reference_traj[:, 0], reference_traj[:, 1], color='gray', linestyle='--', label='Target Trajectory', alpha=0.6)
     # Predicted/Actual Path
-    plt.plot(actual_trajectory[:, 0], actual_trajectory[:, 1], color='blue', label='Generated Path', linewidth=2)
+    plt.plot(actual_trajectory[:, 0], actual_trajectory[:, 1], color='blue', label='Generated Path (Ensembled)', linewidth=2)
     # Start/End Markers
     plt.scatter(actual_trajectory[0, 0], actual_trajectory[0, 1], color='green', marker='o', s=100, label='Start', zorder=5)
     plt.scatter(actual_trajectory[-1, 0], actual_trajectory[-1, 1], color='red', marker='x', s=100, label='End', zorder=5)
     
-    plt.title("Trajectory Evaluation: Target vs. Generated (Diffusion Policy)")
+    plt.title("Trajectory Evaluation: Target vs. Generated (with Temporal Ensembling)")
     plt.xlabel("X coordinates"), plt.ylabel("Y coordinates")
     plt.legend(loc="upper right")
     plt.grid(True, linestyle=':', alpha=0.7)
     plt.axis('equal')
     
-    output_path = "trajectory_inference.png"
+    output_path = "trajectory_inference_ensembling.png"
     plt.savefig(output_path, dpi=150)
     plt.show()
     print(f"\nInference completed. Comparison plot saved as {output_path}")

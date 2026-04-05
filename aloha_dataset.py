@@ -108,32 +108,52 @@ class AlohaDataset(Dataset):
         ep_end = self.ep_boundaries[ep_id + 1].item()
 
         # ----------------------------------------------------
-        # 1. 完美對齊時間起點 (Aligned Chunking)
+        # 1. Perfect Alignment (Aligned Chunking)
         # ----------------------------------------------------
-        # 讓觀測和動作序列都在同一個時間點 (t - obs_horizon + 1) 起頭
+        # Make observation and action sequences start at the same time step (t - obs_horizon + 1)
         t_start = idx - self.obs_horizon + 1
         
         obs_steps = torch.arange(t_start, t_start + self.obs_horizon)
         act_steps = torch.arange(t_start, t_start + self.pred_horizon)
 
         # ----------------------------------------------------
-        # 2. 自動 Padding 處理邊界 (Clamp)
+        # 2. Automatic Padding for Boundary Cases (Clamp)
         # ----------------------------------------------------
-        # clamp 限制數值不能小於 ep_start 且不能大於 ep_end - 1
-        # 這會自動把超出的時間點複製成第一幀或最後一幀 (Padding)
+        # Clamp limits the indices to not fall outside [ep_start, ep_end - 1]
+        # This automatically pads out-of-bounds indices by replicating the first/last frame
         obs_steps_clamped = torch.clamp(obs_steps, min=ep_start, max=ep_end - 1)
         act_steps_clamped = torch.clamp(act_steps, min=ep_start, max=ep_end - 1)
 
         # ----------------------------------------------------
-        # 3. 取得資料並回傳 (Everything stays as Tensor)
+        # 3. Retrieve Data and Apply Augmentations (All Tensors)
         # ----------------------------------------------------
         raw_state = self.cached_states[obs_steps_clamped]
-        img_seq = self.cached_images[obs_steps_clamped]
+        img_seq = self.cached_images[obs_steps_clamped].float()
         raw_action = self.cached_actions[act_steps_clamped]
+
+        # Apply Consistent Data Augmentation across the entire observation window
+        import torch.nn.functional as F
+        
+        # --- 3.1 Consistent Brightness and Contrast ---
+        brightness = 1.0 + float(torch.empty(1).uniform_(-0.2, 0.2))
+        contrast = 1.0 + float(torch.empty(1).uniform_(-0.2, 0.2))
+        
+        img_seq = img_seq * brightness
+        img_seq = torch.clamp((img_seq - 0.5) * contrast + 0.5, 0.0, 1.0)
+        
+        # --- 3.2 Consistent Random Translation (Translation via Padding and Cropping) ---
+        pad = 4
+        img_seq_padded = F.pad(img_seq, (pad, pad, pad, pad), mode='replicate')
+        
+        # Same random crop coordinates for all images in this sequence
+        dx = int(torch.randint(0, 2 * pad + 1, (1,)).item())
+        dy = int(torch.randint(0, 2 * pad + 1, (1,)).item())
+        
+        img_seq = img_seq_padded[..., dy:dy + self.image_size, dx:dx + self.image_size]
 
         return {
             "obs":    self.state_normalizer.normalize(raw_state),
-            "image":  img_seq.float(), 
+            "image":  img_seq, 
             "action": self.action_normalizer.normalize(raw_action),
         }
 

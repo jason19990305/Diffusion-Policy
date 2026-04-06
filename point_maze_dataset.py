@@ -80,12 +80,16 @@ class PointMazeDataset(Dataset):
         actions = self.normalized_actions[traj_idx]
         traj_len = len(states)
         
+        # 0. Perfect Alignment (Aligned Chunking)
+        # Make observation and action sequences start at the same time step
+        t_start = t - self.obs_horizon + 1
+        
         # 1. Observation sequence: use np.clip for index clamping
-        obs_indices = np.clip(np.arange(t - self.obs_horizon + 1, t + 1), 0, traj_len - 1)
+        obs_indices = np.clip(np.arange(t_start, t_start + self.obs_horizon), 0, traj_len - 1)
         obs_seq = states[obs_indices] # shape: (obs_horizon, state_dim)
         
-        # 2. Action sequence: use np.clip for index clamping
-        action_indices = np.clip(np.arange(t, t + self.pred_horizon), 0, traj_len - 1)
+        # 2. Action sequence: natively aligned with obs_start
+        action_indices = np.clip(np.arange(t_start, t_start + self.pred_horizon), 0, traj_len - 1)
         action_seq = actions[action_indices] # shape: (pred_horizon, action_dim)
             
         return {

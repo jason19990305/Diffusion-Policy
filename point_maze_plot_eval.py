@@ -9,6 +9,28 @@ from diffusers import DDIMScheduler
 from point_maze_dataset import PointMazeDataset
 import os
 
+class TemporalEnsembling:
+    def __init__(self, pred_horizon, action_dim):
+        self.pred_horizon = pred_horizon
+        self.action_sum = np.zeros((pred_horizon, action_dim))
+        self.action_count = np.zeros((pred_horizon, 1))
+
+    def update(self, predicted_action_seq):
+        self.action_sum += predicted_action_seq
+        self.action_count += 1
+
+    def get_and_shift(self, execute_steps):
+        counts = np.clip(self.action_count[:execute_steps], a_min=1, a_max=None)
+        avg_actions = self.action_sum[:execute_steps] / counts
+        new_sum = np.zeros_like(self.action_sum)
+        new_count = np.zeros_like(self.action_count)
+        if self.pred_horizon > execute_steps:
+            new_sum[:-execute_steps] = self.action_sum[execute_steps:]
+            new_count[:-execute_steps] = self.action_count[execute_steps:]
+        self.action_sum = new_sum
+        self.action_count = new_count
+        return avg_actions
+
 def plot_eval(num_episodes=10):
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     CHECKPOINT_PATH = "checkpoints/point_maze_diffusion.pth"
@@ -34,6 +56,12 @@ def plot_eval(num_episodes=10):
         obs_buffer = collections.deque([current_state] * 2, maxlen=2)
         trajectory = []
         
+        # Initialize Temporal Ensembling
+        obs_horizon, pred_horizon = 2, 16
+        execute_steps = 4 # Down from 8 to ensure finer control
+        effective_horizon = pred_horizon - obs_horizon + 1
+        ensembler = TemporalEnsembling(effective_horizon, 2)
+        
         for _ in range(500):
             obs_tensor = torch.from_numpy(dataset.state_normalizer.normalize(np.stack(obs_buffer))).float().unsqueeze(0).to(DEVICE)
             
@@ -44,10 +72,16 @@ def plot_eval(num_episodes=10):
                     pred_noise = model(obs_tensor, torch.full((1,), t, device=DEVICE, dtype=torch.long), noised_actions)
                     noised_actions = scheduler.step(pred_noise, t, noised_actions).prev_sample
             
-            # Receding Horizon Execution (8 steps)
+            # Receding Horizon Execution with Temporal Ensembling
             action_seq = dataset.action_normalizer.unnormalize(noised_actions.squeeze(0).cpu().numpy())
-            for i in range(8):
-                obs, _, term, trunc, _ = env.step(action_seq[i])
+            start_idx = obs_horizon - 1
+            future_actions = action_seq[start_idx:]
+            
+            ensembler.update(future_actions)
+            smoothed_actions = ensembler.get_and_shift(execute_steps)
+            
+            for action in smoothed_actions:
+                obs, _, term, trunc, _ = env.step(action)
                 current_state = np.concatenate([obs['observation'], obs['desired_goal']])
                 obs_buffer.append(current_state)
                 trajectory.append(obs['achieved_goal'].copy())

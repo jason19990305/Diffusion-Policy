@@ -131,7 +131,8 @@ if __name__ == "__main__":
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     mse_loss  = nn.MSELoss()
-    scaler    = torch.amp.GradScaler("cuda", enabled=True)
+    # GradScaler is NOT RECOMMENDED with bfloat16 and causes infinite skip/NaN loops
+    # scaler    = torch.amp.GradScaler("cuda", enabled=True)
 
     # ------------------------------------------------------------------ #
     # 5. Step-based Training Loop                                          #
@@ -170,10 +171,13 @@ if __name__ == "__main__":
                 )
                 loss = mse_loss(predicted_noise, noise)
 
-            # 5.4 Backprop with gradient scaling
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            # 5.4 Backprop (bfloat16 natively preserves dynamic range, GradScaler is harmful here)
+            loss.backward()
+            
+            # Critical for Diffusion Models: Gradient Clipping prevents diverging/stuck loss
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            
+            optimizer.step()
             scheduler.step() # Update learning rate every step
             
             # 5.5 EMA update

@@ -66,7 +66,8 @@ class AlohaDataset(Dataset):
         self.action_normalizer = TensorNormalizer(stats["action"]["min"], stats["action"]["max"])
 
         os.makedirs(cache_dir, exist_ok=True)
-        self.cache_path = os.path.join(cache_dir, f"aloha_single_img_obs{obs_horizon}_s{image_size}.pt")
+        # We use '_s' instead of '_size' to match existing filenames on disk
+        self.cache_path = os.path.join(cache_dir, f"aloha_single_img_obs{obs_horizon}_s{image_size}_centered.pt")
 
         if os.path.isfile(self.cache_path):
             print(f"[AlohaDataset] Loading single-cam cache via mmap: {self.cache_path}")
@@ -126,8 +127,7 @@ class AlohaDataset(Dataset):
             self.cached_images[idx : idx + bs] = img_processed
             idx += bs
 
-        # Update cache path to reflect that it is now cropped
-        self.cache_path = self.cache_path.replace(".pt", "_centered.pt")
+        # Save processed cache. self.cache_path already includes '_centered' defined in __init__
         print(f"[AlohaDataset] Saving processed cache to: {self.cache_path}")
         torch.save(self.cached_images, self.cache_path)
 

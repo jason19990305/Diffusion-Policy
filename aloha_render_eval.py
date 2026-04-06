@@ -64,7 +64,7 @@ class TensorTemporalEnsembling:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Render Evaluation for ALOHA")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/aloha_diffusion_step_H100.pth",
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/aloha_diffusion_step_RTX5090_10000.pth",
                         help="Path to the model checkpoint (.pth)")
     parser.add_argument("--output", type=str, default="eval_aloha.mp4",
                         help="Output video filename (will be indexed if num_episodes > 1)")
@@ -115,7 +115,7 @@ def main():
         print(f"Warning: Checkpoint {args.checkpoint} not found. Trying latest...")
         # fallback to aloha_diffusion.pth if step-based name is missing
         args.checkpoint = "checkpoints/aloha_diffusion_H100.pth"
-
+    print(f"[aloha_render] Loading model from {args.checkpoint}")
     model.load_state_dict(torch.load(args.checkpoint, map_location=DEVICE, weights_only=True))
     model.eval()
     print(f"[aloha_render] Model loaded from {args.checkpoint}")
@@ -192,7 +192,7 @@ def main():
         )
 
         frames =[] # To save video
-        max_steps, current_step = 400, 0
+        max_steps, current_step = 800, 0
         pbar = tqdm(total=max_steps, desc=f"Ep {ep}")
 
         while current_step < max_steps:
@@ -245,7 +245,7 @@ def main():
                 try:
                     frame = env.render() 
                     if frame is not None:
-                        # VectorEnv 可能返回 list
+                        
                         if isinstance(frame, (list, tuple)): 
                             frame = frame[0]
                         frames.append(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
@@ -256,8 +256,8 @@ def main():
                 current_step += 1
                 pbar.update(1)
 
-                if terminated.any() or truncated.any():
-                    print(f"\n[aloha_render] Episode {ep} finished early.")
+                if terminated.any():
+                    print(f"\n[aloha_render] Episode {ep} finished early (Success).")
                     current_step = max_steps 
                     break
 

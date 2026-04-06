@@ -95,9 +95,14 @@ class AlohaDataset(Dataset):
             pin_memory=True
         )
 
-        # 2. Use GPU for ultra-fast resizing, fall back to CPU if unavailable
+        # 2. Setup GPU-accelerated preprocessing
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        resize = T.Resize((self.image_size, self.image_size), antialias=True).to(device)
+        
+        # Standard ALOHA sim resolution is 640x480, so we use 480x480 CenterCrop
+        preprocess = T.Compose([
+            T.CenterCrop(480),
+            T.Resize((self.image_size, self.image_size), antialias=True)
+        ])
 
         idx = 0
         for batch in tqdm(dl, desc="Hardware Accelerated Caching"):
@@ -107,22 +112,23 @@ class AlohaDataset(Dataset):
             elif img.ndim == 4 and batch["action"].shape[0] == img.shape[0]:
                 pass # (B, C, H, W)
             
-            # Send to GPU for fast normalize/resize
+            # Send to GPU for fast preprocessing
             img = img.to(device, non_blocking=True)
             
             if img.dtype == torch.uint8:
                 img = img.float() / 255.0
             elif img.dtype != torch.float32:
                 img = img.float()
+            # Apply CenterCrop + Resize on GPU and cast to FP16
+            img_processed = preprocess(img).half().cpu()
             
-            # Resize on GPU and cast to FP16, then push back to CPU RAM
-            img_resized = resize(img).half().cpu()
-            
-            bs = img_resized.shape[0]
-            self.cached_images[idx : idx + bs] = img_resized
+            bs = img_processed.shape[0]
+            self.cached_images[idx : idx + bs] = img_processed
             idx += bs
 
-        print(f"[AlohaDataset] Saving single-cam cache to: {self.cache_path}")
+        # Update cache path to reflect that it is now cropped
+        self.cache_path = self.cache_path.replace(".pt", "_centered.pt")
+        print(f"[AlohaDataset] Saving processed cache to: {self.cache_path}")
         torch.save(self.cached_images, self.cache_path)
 
     def __len__(self) -> int:
@@ -167,6 +173,16 @@ class AlohaDataset(Dataset):
 if __name__ == "__main__":
     from torch.utils.data import DataLoader
     dataset = AlohaDataset(pred_horizon=16, obs_horizon=4, image_size=128)
+    
+    print(f"\n[AlohaDataset Discovery]")
+    print(f"Dataset Size:   {len(dataset)} samples")
+    print(f"State Dim:      {dataset.state_dim}")
+    print(f"Action Dim:     {dataset.action_dim}")
+    
     sample = dataset[len(dataset) // 2]
-    print(f"obs shape:    {list(sample['obs'].shape)}")    
-    print(f"action shape: {list(sample['action'].shape)}")
+    print(f"\n[Sample Verification]")
+    print(f"Observation Horizon: {dataset.obs_horizon}")
+    print(f"Prediction Horizon:  {dataset.pred_horizon}")
+    print(f"Obs State Shape:     {list(sample['obs'].shape)}")    # Expected: [4, 14]
+    print(f"Obs Image Shape:     {list(sample['image'].shape)}")  # Expected: [4, 3, 128, 128]
+    print(f"Action Chunk Shape:  {list(sample['action'].shape)}") # Expected: [16, 14]

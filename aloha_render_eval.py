@@ -64,13 +64,13 @@ class TensorTemporalEnsembling:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Render Evaluation for ALOHA")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/aloha_diffusion_step_70000.pth",
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/aloha_diffusion_step_H100.pth",
                         help="Path to the model checkpoint (.pth)")
     parser.add_argument("--output", type=str, default="eval_aloha.mp4",
                         help="Output video filename (will be indexed if num_episodes > 1)")
     parser.add_argument("--num_episodes", type=int, default=5, help="Number of episodes to render")
     parser.add_argument("--fps", type=int, default=50, help="Simulation FPS")
-    parser.add_argument("--ddim_steps", type=int, default=10, help="DDIM inference steps")
+    parser.add_argument("--ddim_steps", type=int, default=20, help="DDIM inference steps")
     parser.add_argument("--pred_horizon", type=int, default=16)
     parser.add_argument("--obs_horizon", type=int, default=4)
     parser.add_argument("--image_size", type=int, default=128)
@@ -131,7 +131,11 @@ def main():
     scheduler.set_timesteps(args.ddim_steps)
 
     # 5. Image Transformation
-    resize_transform = T.Resize((args.image_size, args.image_size), antialias=True)
+    # CenterCrop(480) is used to maintain 1:1 aspect ratio for ALOHA's 640x480 images
+    resize_transform = T.Compose([
+        T.CenterCrop(480),
+        T.Resize((args.image_size, args.image_size), antialias=True)
+    ])
 
 
     # ---------------------------------------------------------------- #
@@ -153,7 +157,7 @@ def main():
         img_tensor = img_tensor.permute(2, 0, 1)
         # [0,255] -> [0,1]
         img_tensor /= 255.0
-        # resize to (image_size, image_size)
+        # apply composed transform: CenterCrop(480) + Resize(image_size)
         img_tensor = resize_transform(img_tensor)
         
         return state, img_tensor

@@ -43,7 +43,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size",  type=int, default=32)
-    parser.add_argument("--total_steps", type=int, default=1000)
+    parser.add_argument("--total_steps", type=int, default=150000)
     parser.add_argument("--lr",          type=float, default=2e-4)
     parser.add_argument("--num_workers", type=int, default=0) 
     parser.add_argument("--save_interval", type=int,   default=5000)

@@ -64,7 +64,7 @@ class TensorTemporalEnsembling:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Render Evaluation for ALOHA")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/aloha_diffusion.pth",
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/aloha_diffusion_step_70000.pth",
                         help="Path to the model checkpoint (.pth)")
     parser.add_argument("--output", type=str, default="eval_aloha.mp4",
                         help="Output video filename (will be indexed if num_episodes > 1)")

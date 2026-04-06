@@ -38,10 +38,19 @@ class AlohaDataset(Dataset):
         obs_horizon: int = 4,
         image_size: int = 128,
         cache_dir: str = "cache",
+        augment: bool = False,
     ):
         self.pred_horizon = pred_horizon
         self.obs_horizon = obs_horizon
         self.image_size = image_size
+        self.augment = augment
+
+        # ----------------------------------------------------
+        # Data Augmentation: Random Shift (4-8px)
+        # ----------------------------------------------------
+        # We use T.RandomCrop with padding to implement a safe translation.
+        # 'edge' padding mimics the environment and avoids artificial black borders.
+        self.augmentor = T.RandomCrop(image_size, padding=8, padding_mode='edge')
 
         self.lerobot_dataset = LeRobotDataset(self.DATASET_ID, video_backend="pyav")
         hf_data = self.lerobot_dataset.hf_dataset
@@ -163,6 +172,14 @@ class AlohaDataset(Dataset):
         raw_state = self.cached_states[obs_steps_clamped]
         img_seq = self.cached_images[obs_steps_clamped].float()
         raw_action = self.cached_actions[act_steps_clamped]
+
+        # ----------------------------------------------------
+        # 3. Apply Data Augmentation (Safety First)
+        # ----------------------------------------------------
+        if self.augment:
+            # torch.transforms.RandomCrop(..., size, padding) on a 4D Tensor (T, C, H, W)
+            # applies the SAME crop across the leading dimensions (T).
+            img_seq = self.augmentor(img_seq)
 
         return {
             "obs":    self.state_normalizer.normalize(raw_state),

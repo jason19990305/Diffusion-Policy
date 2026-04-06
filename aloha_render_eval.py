@@ -95,6 +95,7 @@ def main():
     # 2. Setup environment
     print(f"[aloha_render] Initializing ALOHA environment...")
     env_cfg = AlohaEnv(task="AlohaTransferCube-v0", render_mode="rgb_array", fps=args.fps)
+    env_cfg.episode_length = 800 # Allow 800 steps natively
     envs = make_env(env_cfg)
     env = envs["aloha"][0] # Get the sync vector env
     
@@ -150,7 +151,6 @@ def main():
         # 2. Dynamic Images
         cam_name = cam_keys.split(".")[-1]
         raw = obs_dict["pixels"][cam_name][0]
-        
         # Keep as Tensor
         img_tensor = torch.as_tensor(raw, dtype=torch.float32).cpu()
         # (H, W, 3) -> (3, H, W)

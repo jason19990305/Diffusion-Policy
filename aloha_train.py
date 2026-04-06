@@ -68,6 +68,7 @@ if __name__ == "__main__":
         pred_horizon=PRED_HORIZON,
         obs_horizon=OBS_HORIZON,
         image_size=IMAGE_SIZE,
+        augment=True,
     )
 
     dataloader = DataLoader(

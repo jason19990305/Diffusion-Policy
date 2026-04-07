@@ -1,9 +1,0 @@
-# Basic Dependencies
-diffusers
-opencv-python-headless
-matplotlib
-tqdm
-numpy==1.26.4
-av
-hf_transfer
-torchvision

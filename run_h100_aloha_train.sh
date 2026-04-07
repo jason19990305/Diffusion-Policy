@@ -1,6 +1,29 @@
 #!/bin/bash
 
 # ==========================================
+# 🛠️ tmux Session Management (SSH Protect)
+# ==========================================
+SESSION_NAME="aloha_train"
+
+if [ -z "$TMUX" ]; then
+    # Check if session exists
+    if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        echo "🚀 Starting training in new tmux session: $SESSION_NAME"
+        # Start session and run the same script inside it
+        # 'read' allows the session to stay open after the script ends or crashes
+        tmux new-session -d -s "$SESSION_NAME" "bash $0; read"
+        echo "✅ Training launched in background."
+        echo "👉 Command to attach: tmux attach -t $SESSION_NAME"
+        exit 0
+    else
+        echo "⚠️  Session '$SESSION_NAME' is already running."
+        echo "👉 Command to attach: tmux attach -t $SESSION_NAME"
+        echo "👉 Command to kill:   tmux kill-session -t $SESSION_NAME"
+        exit 0
+    fi
+fi
+
+# ==========================================
 # 🚀 H100 High-Speed Training Config (Optimized for 94GB VRAM)
 # ==========================================
 
@@ -30,11 +53,14 @@ mkdir -p checkpoints
 
 # 3. Execute Training
 # Use stdbuf to ensure real-time logging to console
+# And use 'tee' to save a persistent log file
+LOG_FILE="checkpoints/train_$(date +%Y%m%d_%H%M%S).log"
 stdbuf -oL python aloha_train.py \
     --batch_size "$BS" \
     --lr "$LR" \
     --total_steps "$STEPS" \
     --num_workers "$WORKERS" \
     --save_interval "$SAVE" \
+    2>&1 | tee "$LOG_FILE"
 
 echo "✅ Training task completed"

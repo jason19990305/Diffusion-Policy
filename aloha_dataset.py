@@ -50,7 +50,7 @@ class AlohaDataset(Dataset):
         # ----------------------------------------------------
         # We use T.RandomCrop with padding to implement a safe translation.
         # 'edge' padding mimics the environment and avoids artificial black borders.
-        self.augmentor = T.RandomCrop(image_size, padding=8, padding_mode='edge')
+        self.augmentor = T.RandomCrop(image_size, padding=4, padding_mode='edge')
 
         self.lerobot_dataset = LeRobotDataset(self.DATASET_ID, video_backend="pyav")
         hf_data = self.lerobot_dataset.hf_dataset
@@ -188,6 +188,21 @@ class AlohaDataset(Dataset):
         }
 
 if __name__ == "__main__":
+    dataset = AlohaDataset(pred_horizon=16, obs_horizon=4, image_size=128)
+    
+    print(f"\n[AlohaDataset Discovery]")
+    print(f"Dataset Size:   {len(dataset)} samples")
+    print(f"State Dim:      {dataset.state_dim}")
+    print(f"Action Dim:     {dataset.action_dim}")
+    
+    sample = dataset[len(dataset) // 2]
+    print(f"\n[Sample Verification]")
+    print(f"Observation Horizon: {dataset.obs_horizon}")
+    print(f"Prediction Horizon:  {dataset.pred_horizon}")
+    print(f"Obs State Shape:     {list(sample['obs'].shape)}")    # Expected: [4, 14]
+    print(f"Obs Image Shape:     {list(sample['image'].shape)}")  # Expected: [4, 3, 128, 128]
+    print(f"Action Chunk Shape:  {list(sample['action'].shape)}") # Expected: [16, 14]
+
     from torch.utils.data import DataLoader
     dataset = AlohaDataset(pred_horizon=16, obs_horizon=4, image_size=128)
     

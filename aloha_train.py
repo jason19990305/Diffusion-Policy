@@ -56,7 +56,7 @@ if __name__ == "__main__":
     LR            = args.lr
     NUM_WORKERS   = args.num_workers
     SAVE_INTERVAL = args.save_interval       
-    WARMUP_STEPS  = 500
+    WARMUP_STEPS  = 3000
     LOG_INTERVAL  = 100         
     SAVE_DIR = "checkpoints"
     os.makedirs(SAVE_DIR, exist_ok=True)

@@ -7,9 +7,9 @@
 # 1. Core Parameter Tuning
 # Recommendation: ALOHA Sim can handle BS 512 or even 1024 on H100
 BS=256 
-LR=2e-4        # Higher BS may require slightly higher LR (e.g., 8e-4 to 1e-3)
-STEPS=100000     # Total steps target for convergence
-SAVE=5000
+LR=1e-4        # Optimal LR for 5090 with Augmentation
+STEPS=300000     # Increased steps for slower convergence
+SAVE=10000       # Less frequent saving
 WORKERS=16      # Use more workers for high-core CPUs to avoid I/O bottlenecks
 
 # 2. Environment Variable Optimization (Hopper Architecture)

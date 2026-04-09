@@ -1,69 +1,60 @@
+import os
+import time
+import math
+import argparse
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import os
-import time
-import argparse
-import numpy as np
 
 from noise_predictor import DiffusionPolicy, EMA
 from diffusers import DDIMScheduler
 from aloha_dataset import AlohaDataset
 
 
-if __name__ == "__main__":
-    # ------------------------------------------------------------------ #
-    # 0. GPU Speed Optimizations                                           #
-    # ------------------------------------------------------------------ #
-    # Enable TF32 for much faster matmuls on RTX 30/40/50 series GPUs
-    torch.set_float32_matmul_precision('high')
+def parse_args():
+    parser = argparse.ArgumentParser(description="ALOHA Diffusion Policy Training")
+    parser.add_argument("--batch_size",    type=int,   default=16)
+    parser.add_argument("--total_steps",   type=int,   default=150000)
+    parser.add_argument("--lr",            type=float, default=2e-4)
+    parser.add_argument("--num_workers",   type=int,   default=0) 
+    parser.add_argument("--save_interval", type=int,   default=10000)
+    return parser.parse_args()
 
-    # ------------------------------------------------------------------ #
-    # 1. Hyperparameters                                                   #
-    # ------------------------------------------------------------------ #
+
+if __name__ == "__main__":
+    # ==========================================
+    # 0. Setup & Hyperparameters
+    # ==========================================
+    # Enable TF32 for faster matmuls on Ampere/Ada GPUs
+    torch.set_float32_matmul_precision('high')
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[aloha_train] Using device: {DEVICE}")
 
-    # Diffusion settings
-    TIMESTEPS    = 100          # Total diffusion training steps (T)
-    PRED_HORIZON = 64           # Action prediction horizon (64 steps = 1.28s @ 50fps)
-    OBS_HORIZON  = 4            # Observation (state + image) history length
+    args = parse_args()
 
-    # Model architecture
-    EMBED_DIM  = 512            # Transformer embedding dimension
-    NUM_HEADS  = 8              # Multi-head attention heads
-    MLP_RATIO  = 4.0            # SwiGLU hidden-dim ratio
-    DEPTH      = 12             # Number of Transformer blocks
+    # Diffusion & Model architecture settings
+    TIMESTEPS    = 100        # Total diffusion steps (T)
+    PRED_HORIZON = 64         # Action prediction horizon (1.28s @ 50fps)
+    OBS_HORIZON  = 4          # Observation history length
+    EMBED_DIM    = 512        # Transformer embedding dim
+    NUM_HEADS    = 8          # Attention heads
+    MLP_RATIO    = 4.0        # SwiGLU hidden-dim ratio
+    DEPTH        = 12         # Transformer blocks
 
-    # Image settings (matched to AlohaDataset)
-    IMAGE_SIZE  = 128           
-    PATCH_SIZE  = 8             # Each img: (128/8)^2 = 256 patches
-    IN_CHANNELS = 3             
+    # Image settings
+    IMAGE_SIZE   = 480           
+    IN_CHANNELS  = 3             
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--batch_size",  type=int, default=32)
-    parser.add_argument("--total_steps", type=int, default=150000)
-    parser.add_argument("--lr",          type=float, default=2e-4)
-    parser.add_argument("--num_workers", type=int, default=0) 
-    parser.add_argument("--save_interval", type=int,   default=10000)
-
-    args = parser.parse_args()
-
-    # Training settings
-    BATCH_SIZE    = args.batch_size          
-    TOTAL_STEPS   = args.total_steps        
-    LR            = args.lr
-    NUM_WORKERS   = args.num_workers
-    SAVE_INTERVAL = args.save_interval       
-    WARMUP_STEPS  = 3000
-    LOG_INTERVAL  = 100         
-    SAVE_DIR = "checkpoints"
+    # Training loop settings
+    WARMUP_STEPS = 3000
+    LOG_INTERVAL = 100         
+    SAVE_DIR     = "checkpoints"
     os.makedirs(SAVE_DIR, exist_ok=True)
 
-    # ------------------------------------------------------------------ #
-    # 2. Dataset and DataLoader                                            #
-    # ------------------------------------------------------------------ #
+    # ==========================================
+    # 1. Dataset & DataLoader
+    # ==========================================
     dataset = AlohaDataset(
         pred_horizon=PRED_HORIZON,
         obs_horizon=OBS_HORIZON,
@@ -73,124 +64,117 @@ if __name__ == "__main__":
 
     dataloader = DataLoader(
         dataset,
-        batch_size  = BATCH_SIZE,
-        shuffle     = True,
-        num_workers = NUM_WORKERS,        # Set to 0 to eliminate WSL/multiprocessing lag
-        pin_memory  = True,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True,
         drop_last=True,
-        persistent_workers = True if NUM_WORKERS > 0 else False,
+        persistent_workers=(args.num_workers > 0),
     )
-    print(f"[aloha_train] Dataset size: {len(dataset)} | "
-          f"Batches/epoch: {len(dataloader)}")
+    print(f"[aloha_train] Dataset size: {len(dataset)} | Batches/epoch: {len(dataloader)}")
 
-    # ------------------------------------------------------------------ #
-    # 3. Model, EMA                                                        #
-    # ------------------------------------------------------------------ #
+    # ==========================================
+    # 2. Model & EMA Definition
+    # ==========================================
     model = DiffusionPolicy(
-        action_dim  = dataset.action_dim,   # 14
-        state_dim   = dataset.state_dim,    # 14
-        embed_dim   = EMBED_DIM,
-        num_heads   = NUM_HEADS,
-        mlp_ratio   = MLP_RATIO,
-        num_blocks  = DEPTH,
-        # --- Image conditioning ---
-        use_image   = True,
-        in_channels = IN_CHANNELS,
-        image_size  = IMAGE_SIZE,
-        patch_size  = PATCH_SIZE,
-        use_checkpoint = True,  # 啟用梯度檢查點以節省顯存
+        action_dim=dataset.action_dim, 
+        state_dim=dataset.state_dim,    
+        embed_dim=EMBED_DIM,
+        num_heads=NUM_HEADS,
+        mlp_ratio=MLP_RATIO,
+        num_blocks=DEPTH,
+        use_image=True,
+        in_channels=IN_CHANNELS,
+        image_size=IMAGE_SIZE,
+        use_checkpoint=True,  # Enable gradient checkpointing to save VRAM
     ).to(DEVICE)
 
-    # Token sequence per sample:
-    #   image : obs_horizon * (image_size/patch_size)^2
-    total_tokens = OBS_HORIZON * (IMAGE_SIZE // PATCH_SIZE) ** 2 + OBS_HORIZON + 1 + PRED_HORIZON
+    # Calculate token sequence length for logging
+    total_tokens = OBS_HORIZON + OBS_HORIZON + 1 + PRED_HORIZON
+
     print(f"[aloha_train] Transformer sequence length: {total_tokens} tokens")
 
     model.train()
     ema_model = EMA(model, beta=0.995)
 
-    # ------------------------------------------------------------------ #
-    # 4. Scheduler, Optimizer, AMP Scaler                                  #
-    # ------------------------------------------------------------------ #
+    # ==========================================
+    # 3. Optimizer, Scheduler & Diffusion Setup
+    # ==========================================
     noise_scheduler = DDIMScheduler(
-        num_train_timesteps = TIMESTEPS,
-        beta_schedule       = "squaredcos_cap_v2",
-        clip_sample         = True,
-        set_alpha_to_one    = True,
-        prediction_type     = "epsilon",
+        num_train_timesteps=TIMESTEPS,
+        beta_schedule="squaredcos_cap_v2",
+        clip_sample=True,
+        set_alpha_to_one=True,
+        prediction_type="epsilon",
     )
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    mse_loss  = nn.MSELoss()
     
     # Cosine Annealing with Linear Warmup
     def lr_lambda(current_step):
         if current_step < WARMUP_STEPS:
             return float(current_step) / float(max(1, WARMUP_STEPS))
-        # After warmup, cosine decay to zero
-        progress = float(current_step - WARMUP_STEPS) / float(max(1, TOTAL_STEPS - WARMUP_STEPS))
-        return 0.5 * (1.0 + np.cos(np.pi * progress))
+        # Cosine decay after warmup
+        progress = float(current_step - WARMUP_STEPS) / float(max(1, args.total_steps - WARMUP_STEPS))
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    mse_loss  = nn.MSELoss()
-    # GradScaler is NOT RECOMMENDED with bfloat16 and causes infinite skip/NaN loops
-    # scaler    = torch.amp.GradScaler("cuda", enabled=True)
 
-    # ------------------------------------------------------------------ #
-    # 5. Step-based Training Loop                                          #
-    # ------------------------------------------------------------------ #
-    print(f"[aloha_train] Starting training for {TOTAL_STEPS} steps ...")
+    # ==========================================
+    # 4. Training Loop
+    # ==========================================
+    print(f"[aloha_train] Starting training for {args.total_steps} steps ...")
     global_step = 0
-    pbar = tqdm(total=TOTAL_STEPS, desc="ALOHA Training")
     t_start = time.time()
+    
+    pbar = tqdm(total=args.total_steps, desc="ALOHA Training")
 
-    while global_step < TOTAL_STEPS:
+    while global_step < args.total_steps:
         for batch in dataloader:
-            if global_step >= TOTAL_STEPS:
+            if global_step >= args.total_steps:
                 break
             
-            # 5.1 Prepare data
-            obs    = batch["obs"].to(DEVICE, non_blocking=True)     # (B, obs_horizon, 14)
-            images = batch["image"].to(DEVICE, non_blocking=True)   # (B, obs_horizon, 3, H, W)
-            # Sequence:[t - obs_horizon + 1, ..., t, ..., t + pred_horizon - obs_horizon]
-            actions = batch["action"].to(DEVICE, non_blocking=True) # (B, pred_horizon, 14)
+            # --- Prepare Data ---
+            obs     = batch["obs"].to(DEVICE, non_blocking=True)
+            images  = batch["image"].to(DEVICE, non_blocking=True)
+            actions = batch["action"].to(DEVICE, non_blocking=True)
 
-            # 5.1 Sample random diffusion timesteps
+            # --- Forward Diffusion ---
+            # Sample random timesteps
             k = torch.randint(0, TIMESTEPS, (obs.shape[0],), device=DEVICE)
-
-            # 5.2 Add noise to ground-truth actions
-            noise         = torch.randn_like(actions)
+            # Add noise to ground-truth actions
+            noise = torch.randn_like(actions)
             noised_actions = noise_scheduler.add_noise(actions, noise, k)
 
-            # 5.3 Forward pass with AMP (BF16 is faster on RTX 50 series)
+            # --- Forward Pass (BF16 Autocast) ---
             optimizer.zero_grad()
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 predicted_noise = model(
-                    observations  = obs,
-                    diffusion_steps = k,
-                    noised_actions  = noised_actions,
-                    images          = images,         # <-- image conditioning
+                    observations=obs,
+                    diffusion_steps=k,
+                    noised_actions=noised_actions,
+                    images=images,
                 )
                 loss = mse_loss(predicted_noise, noise)
 
-            # 5.4 Backprop (bfloat16 natively preserves dynamic range, GradScaler is harmful here)
+            # --- Backward Pass & Optimize ---
             loss.backward()
-            
-            # Critical for Diffusion Models: Gradient Clipping prevents diverging/stuck loss
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Prevent divergence
             
             optimizer.step()
-            scheduler.step() # Update learning rate every step
-            
-            # 5.5 EMA update
+            scheduler.step()
             ema_model.update(model)
 
+            # --- Logging & Checkpointing ---
             global_step += 1
             pbar.update(1)
 
             if global_step % LOG_INTERVAL == 0:
                 elapsed = time.time() - t_start
                 it_per_sec = global_step / max(elapsed, 1e-6)
-                eta_h = (TOTAL_STEPS - global_step) / max(it_per_sec, 1e-6) / 3600
+                eta_h = (args.total_steps - global_step) / max(it_per_sec, 1e-6) / 3600
+                
                 pbar.set_postfix({
                     "Loss": f"{loss.item():.5f}", 
                     "lr": f"{scheduler.get_last_lr()[0]:.1e}",
@@ -198,13 +182,16 @@ if __name__ == "__main__":
                     "ETA": f"{eta_h:.1f}h"
                 })
 
-            if global_step % SAVE_INTERVAL == 0:
+            if global_step % args.save_interval == 0:
                 ckpt_path = os.path.join(SAVE_DIR, f"aloha_diffusion_step_{global_step}.pth")
                 ema_model.save_pretrained(ckpt_path)
                 ema_model.save_pretrained(os.path.join(SAVE_DIR, "aloha_diffusion.pth"))
-                print(f"\n[aloha_train] Checkpoint saved at step {global_step}")
+                # Print nicely without breaking tqdm formatting
+                tqdm.write(f"[aloha_train] Checkpoint saved at step {global_step}")
 
     pbar.close()
-    ema_model.save_pretrained(os.path.join(SAVE_DIR, "aloha_diffusion.pth"))
-    print(f"[aloha_train] Training complete. "
-          f"Final model -> {os.path.join(SAVE_DIR, 'aloha_diffusion.pth')}")
+    
+    # Save final model
+    final_path = os.path.join(SAVE_DIR, "aloha_diffusion.pth")
+    ema_model.save_pretrained(final_path)
+    print(f"[aloha_train] Training complete. Final model -> {final_path}")

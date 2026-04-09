@@ -12,23 +12,14 @@ class EMA:
         self.beta = beta
         self.step = 0
         
-        # Create a copy of the model for EMA
         self.ema_model = copy.deepcopy(model)
 
-        # Freeze the EMA model parameters
         for param in self.ema_model.parameters():
             param.requires_grad_(False)
             
     def update(self, model: nn.Module):
-        """
-        Update the EMA model parameters using the current model parameters.
-        This should be called after each training step.
-        """
-        
         self.step += 1
-        
-        for current_param , ema_param in zip(model.parameters(), self.ema_model.parameters()):
-            # Update EMA parameter 
+        for current_param, ema_param in zip(model.parameters(), self.ema_model.parameters()):
             ema_param.data.mul_(self.beta)
             ema_param.data.add_(current_param.data * (1.0 - self.beta))
             
@@ -38,6 +29,7 @@ class EMA:
     def save_pretrained(self, path: str):
         torch.save(self.ema_model.state_dict(), path)
         
+
 # ---------------------------------
 # SwiGLU Activation Class
 # ---------------------------------
@@ -50,23 +42,18 @@ class SwiGLU(nn.Module):
         
         nn.init.zeros_(self.w_out.weight)
         nn.init.zeros_(self.w_out.bias)
+        
     def forward(self, x):
-        # 1. create gate
-        gate = F.silu(self.w1(x))  # shape: (batch_size, hidden_features)
-        # 2. apply gate to second linear transformation
+        gate = F.silu(self.w1(x))
         x = self.w2(x) * gate
-        # 3. project to output features
         x = self.w_out(x)
         return x
 
 
 # ---------------------------------
-# Time Embedding Class for Diffusion Step Information
+# Time Embedding Class
 # ---------------------------------
 class TimestepEmbedder(nn.Module):
-    """
-    Standard sinusoidal timestep embedding followed by an MLP.
-    """
     def __init__(self, freq_dim: int, embed_dim=256):
         super().__init__()
         self.freq_dim = freq_dim
@@ -79,29 +66,22 @@ class TimestepEmbedder(nn.Module):
         
     @staticmethod
     def sinusoidal(t: torch.Tensor, dim: int) -> torch.Tensor:
-        """
-        Generates sinusoidal embeddings for the given timesteps.
-        This is a common technique in diffusion models to encode the timestep information.
-        """
         half = dim // 2
         freqs = torch.exp(
             -math.log(10000) * torch.arange(half, dtype=torch.float32, device=t.device) / half
         )
-        args = t[:, None].float() * freqs[None]   # (B, half)
-        return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)  # (B, dim)
+        args = t[:, None].float() * freqs[None]
+        return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
     
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         x = self.sinusoidal(t, self.freq_dim)
         return self.mlp(x) 
 
+
 # ---------------------------------
-# Efficient Attention using SDPA (Flash Attention)
+# Efficient Attention (Flash Attention)
 # ---------------------------------
 class EfficientAttention(nn.Module):
-    """
-    A memory-efficient multi-head attention implementation that 
-    leverages torch.nn.functional.scaled_dot_product_attention.
-    """
     def __init__(self, embed_dim, num_heads):
         super().__init__()
         self.num_heads = num_heads
@@ -114,14 +94,10 @@ class EfficientAttention(nn.Module):
 
     def forward(self, x):
         B, N, C = x.shape
-        # 1. Linear projection -> (B, N, 3, H, D) -> (3, B, H, N, D)
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        # 2. Scaled Dot Product Attention (triggers Flash Attention if available)
-        attn_out = F.scaled_dot_product_attention(q, k, v) # (B, H, N, D)
-
-        # 3. Reshape and project back
+        attn_out = F.scaled_dot_product_attention(q, k, v)
         attn_out = attn_out.transpose(1, 2).reshape(B, N, C)
         return self.proj(attn_out)
 
@@ -133,11 +109,6 @@ class TransformerBlock(nn.Module):
     def __init__(self, embed_dim=256, num_heads=8, mlp_ratio=4.0):
         super().__init__()
         self.norm1 = nn.LayerNorm(embed_dim)
-        
-        # --- Original Implementation (Commented out) ---
-        # self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
-        
-        # --- New Efficient Implementation ---
         self.attn = EfficientAttention(embed_dim, num_heads)
         
         self.norm2 = nn.LayerNorm(embed_dim)
@@ -145,29 +116,139 @@ class TransformerBlock(nn.Module):
         self.mlp = SwiGLU(embed_dim, hidden_dim, embed_dim)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # 1. self-attention with residual
         x = x + self.attn(self.norm1(x))
-        # 2. MLP with residual
         x = x + self.mlp(self.norm2(x))
         return x
 
+
 # ---------------------------------
-# Patch Embedding for Diffusion Transformer
+# Spatial Softmax Block
 # ---------------------------------
-class PatchEmbed(nn.Module):
+class SpatialSoftmax(nn.Module):
     """
-    Converts 2D latent images into a 1D sequence of flattened patches.
-    patch_size=16 -> 96x96 image gives (96/16)^2 = 36 patches per image.
+    Extracts spatial expected coordinates (Keypoints) from feature maps.
     """
-    def __init__(self, in_channels: int, embed_dim: int, patch_size: int):
+    def __init__(self, height: int, width: int, num_channels: int, temperature: float = 1.0):
         super().__init__()
-        self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.height = height
+        self.width = width
+        self.num_channels = num_channels
+
+        # Create normalized coordinate grids [-1, 1]
+        pos_y, pos_x = torch.meshgrid(
+            torch.linspace(-1., 1., height),
+            torch.linspace(-1., 1., width),
+            indexing='ij'
+        )
+        pos_x = pos_x.reshape(-1)
+        pos_y = pos_y.reshape(-1)
+        self.register_buffer('pos_x', pos_x)
+        self.register_buffer('pos_y', pos_y)
+
+        # Learnable temperature parameter
+        self.temperature = nn.Parameter(torch.ones(1) * temperature)
+
+    def forward(self, feature: torch.Tensor) -> torch.Tensor:
+        # feature: (B, C, H, W)
+        B, C, H, W = feature.shape
+        assert H == self.height and W == self.width, f"Expected {self.height}x{self.width}, got {H}x{W}"
+
+        # Flatten spatial dimensions: (B, C, H*W)
+        feature_flat = feature.reshape(B, C, H * W)
         
+        # Apply temperature and softmax to get probabilities
+        weights = F.softmax(feature_flat / self.temperature, dim=-1)
+
+        # Calculate expected coordinates
+        expected_x = torch.sum(self.pos_x * weights, dim=-1) # (B, C)
+        expected_y = torch.sum(self.pos_y * weights, dim=-1) # (B, C)
+
+        # Stack coordinates: (B, C, 2) and flatten to (B, C * 2)
+        expected_xy = torch.stack([expected_x, expected_y], dim=-1)
+        return expected_xy.reshape(B, C * 2)
+
+
+class ResBlock(nn.Module):
+    """
+    A lightweight Residual Block to help networks trained from scratch converge more easily.
+    """
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
+        super().__init__()
+        # First convolutional layer (with optional downsampling)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        
+        # Second convolutional layer (maintains feature map size)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        # Shortcut branch: adjust dimensions/resolution to match for addition if necessary
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)  # Add residual shortcut
+        out = F.relu(out, inplace=True)
+        return out
+
+
+class VisionEncoder(nn.Module):
+    """
+    Mini-ResNet + SpatialSoftmax designed for 128x128 images, ideal for training from scratch.
+    """
+    def __init__(self, in_channels: int = 3, image_size: int = 128, embed_dim: int = 256):
+        super().__init__()
+        
+        # 1. Lightweight ResNet feature extractor (Downsamples by a total factor of 16)
+        self.cnn = nn.Sequential(
+            # Input: (B, 3, 128, 128)
+            nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),  
+            # -> (B, 32, 64, 64)
+            
+            ResBlock(32, 64, stride=2),   
+            # -> (B, 64, 32, 32)
+            
+            ResBlock(64, 128, stride=2),  
+            # -> (B, 128, 16, 16)
+            
+            ResBlock(128, 256, stride=2)  
+            # -> (B, 256, 8, 8)
+        )
+        
+        # 2. Spatial Softmax Module
+        # Image is downsampled by 2*2*2*2 = 16 times, so 128 / 16 = 8
+        feat_size = image_size // 16
+        num_channels = 256
+        
+        # (Assuming the SpatialSoftmax class defined earlier is available)
+        self.spatial_softmax = SpatialSoftmax(
+            height=feat_size, 
+            width=feat_size, 
+            num_channels=num_channels
+        )
+        
+        # 3. Final projection: maps 256 coordinate pairs (512 values) to Transformer's embed_dim
+        self.proj = nn.Sequential(
+            nn.Linear(num_channels * 2, embed_dim),
+            nn.LayerNorm(embed_dim),  # Add LayerNorm to stabilize tokens fed into the Transformer
+            nn.SiLU()
+        )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape : (Batch size, channels, H, W)
-        x = self.proj(x)                  # Output: (N, embed_dim, H/patch_size, W/patch_size)
-        x = x.flatten(2).transpose(1, 2)  # Output: (N, seq_len, embed_dim) where seq_len = (H/patch_size)*(W/patch_size)
-        return x
+        # x: (B, 3, 128, 128)
+        features = self.cnn(x)                     # -> (B, 256, 8, 8)
+        keypoints = self.spatial_softmax(features) # -> (B, 512)
+        img_token = self.proj(keypoints)           # -> (B, embed_dim)
+        return img_token
+
 
 # ---------------------------------
 # Diffusion Policy Class
@@ -182,11 +263,10 @@ class DiffusionPolicy(nn.Module):
         mlp_ratio: float = 4.0,
         num_blocks: int = 4,
         # --- Image input parameters ---
-        use_image: bool = False,      # Enable image conditioning
-        in_channels: int = 3,         # RGB channels
-        image_size: int = 128,        # Resize target (H = W)
-        patch_size: int = 8,          # 縮小 Patch 從 16 -> 8 以提升精度
-        use_checkpoint: bool = False  # Enable Gradient Checkpointing
+        use_image: bool = False,
+        in_channels: int = 3,         
+        image_size: int = 128,        
+        use_checkpoint: bool = False  
     ):
         super().__init__()
         self.action_dim = action_dim
@@ -202,25 +282,21 @@ class DiffusionPolicy(nn.Module):
         # 3. Noised action embedding
         self.action_embedder = nn.Linear(action_dim, embed_dim)
         
-        # 4. Image patch embedding (only when use_image=True)
+        # 4. Image Vision Encoder (CNN + Spatial Softmax)
         if use_image:
-            self.patch_embedder = PatchEmbed(
+            self.vision_encoder = VisionEncoder(
                 in_channels=in_channels,
-                embed_dim=embed_dim,
-                patch_size=patch_size
+                image_size=image_size,
+                embed_dim=embed_dim
             )
-            # Number of patches per single image frame
-            patches_per_side = image_size // patch_size          
-            self.num_patches_per_image = patches_per_side ** 2   
-            print(f"[DiffusionPolicy] Image mode: {image_size}x{image_size}, "
-                  f"patch_size={patch_size}, {self.num_patches_per_image} patches/image")
+            print(f"[DiffusionPolicy] Image mode: {image_size}x{image_size} using SpatialSoftmax")
         
-        # 5. Transformer blocks for processing the combined token sequence
+        # 5. Transformer blocks
         self.blocks = nn.ModuleList([
             TransformerBlock(embed_dim, num_heads, mlp_ratio) for _ in range(num_blocks)
         ])
         
-        # 6. Final projection: maps last action tokens back to action dimension
+        # 6. Final projection
         self.final_proj = nn.Linear(embed_dim, action_dim)
 
     def forward(
@@ -231,55 +307,47 @@ class DiffusionPolicy(nn.Module):
         images: torch.Tensor = None,     # (B, obs_horizon, C, H, W) optional
     ) -> torch.Tensor:
         
-        # 1. Embed state observations: (B, obs_horizon, embed_dim)
+        # 1. Embed states, time, and actions
         obs_emb = self.obs_embedder(observations)
-        
-        # 2. Embed diffusion timestep: (B, 1, embed_dim)
         time_emb = self.time_embedder(diffusion_steps).reshape(-1, 1, self.embed_dim)
-        
-        # 3. Embed noised actions: (B, pred_horizon, embed_dim)
         action_emb = self.action_embedder(noised_actions)
         
-        # 4. Build token sequence: start with [obs | time | action]
-        #    Image tokens are prepended when available
-        tokens = [obs_emb, time_emb, action_emb]
+        # 2. Base token sequence
+        tokens =[obs_emb, time_emb, action_emb]
         
-        # 5. Patchify image and prepend as conditioning tokens
+        # 3. Process Images using Spatial Softmax
         if self.use_image and images is not None:
-            # images: (B, T_obs, C, H, W)
             B, T_obs, C, H, W = images.shape
-            
-            # Flatten B, T_obs to process all frames/views through patch embedder
             imgs_flat = images.reshape(B * T_obs, C, H, W)
-            img_patches = self.patch_embedder(imgs_flat)  # (B*T_obs, num_patches, embed_dim)
             
-            # Restore and concatenate all camera patches
-            # (B, T_obs * num_patches, embed_dim)
-            img_patches = img_patches.reshape(B, T_obs * self.num_patches_per_image, self.embed_dim)
+            # Extract features and keypoints -> 1 Token per image frame
+            img_tokens = self.vision_encoder(imgs_flat)  # (B*T_obs, embed_dim)
+            
+            # Reshape back to sequence: (B, T_obs, embed_dim)
+            img_tokens = img_tokens.reshape(B, T_obs, self.embed_dim)
             
             # Prepend image tokens
-            tokens = [img_patches] + tokens
+            tokens = [img_tokens] + tokens
         
-        # 6. Concatenate all tokens along sequence dimension
-        x = torch.cat(tokens, dim=1)  # (B, total_seq_len, embed_dim)
+        # 4. Concatenate tokens along sequence dimension
+        x = torch.cat(tokens, dim=1)
 
-        # 7. Add sinusoidal positional encoding
+        # 5. Add sinusoidal positional encoding
         seq_len = x.shape[1]
         positions = torch.arange(seq_len, device=x.device)
         pos_emb = TimestepEmbedder.sinusoidal(positions, self.embed_dim)
         x = x + pos_emb
         
-        # 8. Pass through Transformer blocks (with optional Gradient Checkpointing)
+        # 6. Pass through Transformer blocks
         for block in self.blocks:
             if self.use_checkpoint and self.training:
-                # Need to wrap block.forward to call it with checkpoint
                 import torch.utils.checkpoint as cp
                 x = cp.checkpoint(block, x, use_reentrant=False)
             else:
                 x = block(x)
         
-        # 9. Extract only the action tokens (always at the tail of the sequence)
+        # 7. Extract action tokens (at the tail of the sequence)
         action_seq_len = noised_actions.shape[1]
-        action_out = x[:, -action_seq_len:, :]  # (B, pred_horizon, embed_dim)
-        output = self.final_proj(action_out)     # (B, pred_horizon, action_dim)
+        action_out = x[:, -action_seq_len:, :]
+        output = self.final_proj(action_out)
         return output

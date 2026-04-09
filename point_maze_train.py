@@ -16,12 +16,12 @@ if __name__ == "__main__":
     EMBED_DIM = 256         # Embedding dimension for the model
     NUM_HEADS = 8           # Number of attention heads
     MLP_RATIO = 4.0         # MLP expansion ratio
-    PRED_HORIZON = 16       # Prediction horizon
+    PRED_HORIZON = 32       # Prediction horizon
     OBS_HORIZON = 2         # Observation horizon 
     
     # RTX 5070 TI Max Optimization
-    BATCH_SIZE = 4096       # Maximized for high-end GPU
-    TOTAL_STEPS = 10000    # Step-based training instead of epochs
+    BATCH_SIZE = 1024       # Maximized for high-end GPU
+    TOTAL_STEPS = 30000    # Step-based training instead of epochs
     LOG_INTERVAL = 100      # Steps between logging
     SAVE_INTERVAL = 5000   # Steps between saving checkpoints
     
@@ -38,7 +38,7 @@ if __name__ == "__main__":
         dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=True, 
-        num_workers=4, 
+        num_workers=0, 
         pin_memory=True,
         drop_last=True
     )

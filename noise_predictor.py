@@ -8,7 +8,7 @@ import math
 # EMA (Exponential Moving Average) Class
 # ---------------------------------
 class EMA:
-    def __init__(self, model: nn.Module, beta: float = 0.995):
+    def __init__(self, model: nn.Module, beta: float = 0.99):
         self.beta = beta
         self.step = 0
         

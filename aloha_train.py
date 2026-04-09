@@ -27,7 +27,7 @@ if __name__ == "__main__":
 
     # Diffusion settings
     TIMESTEPS    = 100          # Total diffusion training steps (T)
-    PRED_HORIZON = 16           # Action prediction horizon
+    PRED_HORIZON = 64           # Action prediction horizon (64 steps = 1.28s @ 50fps)
     OBS_HORIZON  = 4            # Observation (state + image) history length
 
     # Model architecture

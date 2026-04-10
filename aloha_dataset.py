@@ -5,6 +5,8 @@ from torch.utils.data import Dataset
 import torchvision.transforms as T
 from tqdm import tqdm
 import warnings
+import random
+import torchvision.transforms.functional as F
 
 # Suppress torchvision warnings regarding video decoding
 warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
@@ -25,6 +27,56 @@ class TensorNormalizer:
 
     def unnormalize(self, x_norm: torch.Tensor) -> torch.Tensor:
         return (x_norm + 1.0) / 2.0 * self.range + self.min
+
+class AlohaAugmentor:
+    def __init__(self, image_size=128):
+        self.image_size = image_size
+        # 1. Random Shift (maintains original Edge Padding)
+        self.padding = 8 # Increased to 8px to expand the shift range
+        
+    def __call__(self, img_seq: torch.Tensor) -> torch.Tensor:
+        """
+        img_seq: (T, C, H, W)
+        """
+        # --- Determine random parameters shared across this specific sequence ---
+        
+        # 1. Random Crop parameters
+        top = random.randint(0, self.padding * 2)
+        left = random.randint(0, self.padding * 2)
+        
+        # 2. Color Jitter parameters
+        brightness = random.uniform(0.8, 1.2)
+        contrast = random.uniform(0.8, 1.2)
+        saturation = random.uniform(0.8, 1.2)
+        
+        # 3. Decide whether to apply certain probabilistic augmentations
+        apply_noise = random.random() > 0.5
+        
+        # Apply padding first to prepare for cropping
+        # (T, C, H, W) -> Padding is applied to the last two dimensions (H and W)
+        img_seq = F.pad(img_seq, padding=[self.padding]*4, padding_mode='edge')
+        
+        processed_frames = []
+        for i in range(img_seq.shape[0]):
+            img = img_seq[i]
+            
+            # Apply the same crop across the sequence
+            img = F.crop(img, top, left, self.image_size, self.image_size)
+            
+            # Apply the same color jitter across the sequence
+            img = F.adjust_brightness(img, brightness)
+            img = F.adjust_contrast(img, contrast)
+            img = F.adjust_saturation(img, saturation)
+            
+            # Add slight Gaussian noise 
+            # (Noise varies slightly per frame to improve robustness)
+            if apply_noise:
+                img = img + torch.randn_like(img) * 0.01
+                img = torch.clamp(img, 0.0, 1.0)
+                
+            processed_frames.append(img)
+            
+        return torch.stack(processed_frames)
 
 class AlohaDataset(Dataset):
     """
@@ -50,7 +102,8 @@ class AlohaDataset(Dataset):
         # ----------------------------------------------------
         # We use T.RandomCrop with padding to implement a safe translation.
         # 'edge' padding mimics the environment and avoids artificial black borders.
-        self.augmentor = T.RandomCrop(image_size, padding=4, padding_mode='edge')
+        self.augmentor = AlohaAugmentor(image_size=image_size)
+
 
         self.lerobot_dataset = LeRobotDataset(self.DATASET_ID, video_backend="pyav")
         hf_data = self.lerobot_dataset.hf_dataset

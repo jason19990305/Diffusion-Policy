@@ -15,7 +15,7 @@ from aloha_dataset import AlohaDataset
 def parse_args():
     parser = argparse.ArgumentParser(description="ALOHA Diffusion Policy Training")
     parser.add_argument("--batch_size",    type=int,   default=16)
-    parser.add_argument("--total_steps",   type=int,   default=150000)
+    parser.add_argument("--total_steps",   type=int,   default=3e5)
     parser.add_argument("--lr",            type=float, default=2e-4)
     parser.add_argument("--num_workers",   type=int,   default=0) 
     parser.add_argument("--save_interval", type=int,   default=10000)
@@ -35,7 +35,7 @@ if __name__ == "__main__":
 
     # Diffusion & Model architecture settings
     TIMESTEPS    = 100        # Total diffusion steps (T)
-    PRED_HORIZON = 64         # Action prediction horizon (1.28s @ 50fps)
+    PRED_HORIZON = 32         # Action prediction horizon (1.28s @ 50fps)
     OBS_HORIZON  = 4          # Observation history length
     EMBED_DIM    = 512        # Transformer embedding dim
     NUM_HEADS    = 8          # Attention heads
@@ -43,7 +43,7 @@ if __name__ == "__main__":
     DEPTH        = 12         # Transformer blocks
 
     # Image settings
-    IMAGE_SIZE   = 480           
+    IMAGE_SIZE   = 224           
     IN_CHANNELS  = 3             
 
     # Training loop settings

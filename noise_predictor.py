@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import copy
 import math
+import torchvision.models as models
 
 # ---------------------------------
 # EMA (Exponential Moving Average) Class
@@ -168,32 +169,42 @@ class SpatialSoftmax(nn.Module):
         return expected_xy.reshape(B, C * 2)
 
 
+# ---------------------------------
+# Residual Block Class
+# ---------------------------------
 class ResBlock(nn.Module):
-    """
-    A lightweight Residual Block to help networks trained from scratch converge more easily.
-    """
-    def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1, groups: int = 8):
         super().__init__()
-        # First convolutional layer (with optional downsampling)
+        # Ensure out_channels is divisible by groups
+        # For channels [32, 64, 128, 256], groups=8 or 16 will work perfectly.
+        
+        # First convolutional layer
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.gn1 = nn.GroupNorm(groups, out_channels) # Fixed: (num_groups, num_channels)
         
-        # Second convolutional layer (maintains feature map size)
+        # Second convolutional layer
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.gn2 = nn.GroupNorm(groups, out_channels)
         
-        # Shortcut branch: adjust dimensions/resolution to match for addition if necessary
+        # Shortcut branch
         self.shortcut = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(out_channels)
+                nn.GroupNorm(groups, out_channels)
             )
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)  # Add residual shortcut
+        # 1. First Conv + GN + ReLU
+        out = F.relu(self.gn1(self.conv1(x)), inplace=True)
+        
+        # 2. Second Conv + GN
+        out = self.gn2(self.conv2(out))
+        
+        # 3. Add shortcut connection
+        out += self.shortcut(x)
+        
+        # 4. Final ReLU
         out = F.relu(out, inplace=True)
         return out
 

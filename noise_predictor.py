@@ -220,7 +220,7 @@ class VisionEncoder(nn.Module):
         self.cnn = nn.Sequential(
             # Input: (B, 3, 128, 128)
             nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(32),
+            nn.GroupNorm(8, 32),
             nn.ReLU(inplace=True),  
             # -> (B, 32, 64, 64)
             

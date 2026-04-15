@@ -30,10 +30,10 @@ fi
 # 1. Core Parameter Tuning
 # Recommendation: ALOHA Sim can handle BS 512 or even 1024 on H100
 BS=64 
-LR=1e-4        # Optimal LR for 5090 with Augmentation
-STEPS=300000     # Increased steps for slower convergence
+LR=2e-4        # Optimal LR for 5090 with Augmentation
+STEPS=600000        # [修改] 縮短訓練步數至 600K，讓學習率 (Cosine) 提早衰減，防止震盪並幫助模型穩定收斂
 SAVE=10000       # Less frequent saving
-WORKERS=8      # Use more workers for high-core CPUs to avoid I/O bottlenecks
+WORKERS=16      # Use more workers for high-core CPUs to avoid I/O bottlenecks
 
 # 2. Environment Variable Optimization (Hopper Architecture)
 export CUDA_DEVICE_ORDER=PCI_BUS_ID

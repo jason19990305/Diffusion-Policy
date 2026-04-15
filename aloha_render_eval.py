@@ -51,7 +51,7 @@ class TensorTemporalEnsembling:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="ALOHA Evaluation (Spatial Softmax)")
-    parser.add_argument("--checkpoint",   type=str, default="checkpoints/aloha_diffusion_step_300000.pth")
+    parser.add_argument("--checkpoint",   type=str, default="checkpoints/aloha_diffusion_step_10000.pth")
     parser.add_argument("--output",       type=str, default="eval_aloha.mp4")
     parser.add_argument("--num_episodes", type=int, default=5)
     parser.add_argument("--fps",          type=int, default=50)

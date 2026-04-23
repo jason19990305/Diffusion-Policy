@@ -108,7 +108,6 @@ if __name__ == "__main__":
         prediction_type="epsilon",
     )
 
-    # [修改] 提高 weight_decay (1e-4 -> 1e-3) 緩減過擬合；加入 eps=1e-5 避免 Loss 接近 0 時產生 Adam 分母極小的梯度爆炸問題
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-3, eps=1e-5)
     mse_loss  = nn.MSELoss()
     

@@ -19,39 +19,12 @@ from noise_predictor import DiffusionPolicy
 from aloha_dataset import AlohaDataset
 
 
-class TensorTemporalEnsembling:
-    """
-    Temporal Ensembling for action smoothing across overlapping prediction horizons.
-    """
-    def __init__(self, pred_horizon, action_dim):
-        self.pred_horizon = pred_horizon
-        self.action_dim = action_dim
-        self.action_sum = torch.zeros((pred_horizon, action_dim))
-        self.action_count = torch.zeros((pred_horizon, 1))
-
-    def update(self, predicted_action_seq):
-        self.action_sum += predicted_action_seq
-        self.action_count += 1
-
-    def get_and_shift_actions(self, n_actions):
-        counts = torch.clamp(self.action_count[:n_actions], min=1)
-        avg_actions = self.action_sum[:n_actions] / counts
-        
-        new_sum = torch.zeros_like(self.action_sum)
-        new_count = torch.zeros_like(self.action_count)
-        
-        if self.pred_horizon > n_actions:
-            new_sum[:-n_actions] = self.action_sum[n_actions:]
-            new_count[:-n_actions] = self.action_count[n_actions:]
-            
-        self.action_sum = new_sum
-        self.action_count = new_count
-        return avg_actions
+from utils.ensembling import TensorTemporalEnsembler
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="ALOHA Evaluation (Spatial Softmax)")
-    parser.add_argument("--checkpoint",   type=str, default="checkpoints/aloha_diffusion_step_10000.pth")
+    parser.add_argument("--checkpoint",   type=str, default="checkpoints/aloha_diffusion_step_400000.pth")
     parser.add_argument("--output",       type=str, default="eval_aloha.mp4")
     parser.add_argument("--num_episodes", type=int, default=5)
     parser.add_argument("--fps",          type=int, default=50)
@@ -160,7 +133,7 @@ def main():
 
         # Effective horizon for ensembling: pred_horizon - offset from history
         eff_horizon = args.pred_horizon - args.obs_horizon + 1
-        ensembler = TensorTemporalEnsembling(eff_horizon, dataset.action_dim)
+        ensembler = TensorTemporalEnsembler(eff_horizon, dataset.action_dim)
 
         frames = []
         max_steps, current_step = 800, 0

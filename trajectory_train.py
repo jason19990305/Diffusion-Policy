@@ -11,7 +11,12 @@ import os
 
 
 if __name__ == "__main__":
+    # ==========================================
+    # 0. Setup & Hyperparameters
+    # ==========================================
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[trajectory_train] Using device: {DEVICE}")
+
     # Hyperparameters for Diffusion Policy
     TIMESTEPS = 100         # Total diffusion steps
     EMBED_DIM = 256         # Embedding dimension for the model
@@ -19,80 +24,78 @@ if __name__ == "__main__":
     MLP_RATIO = 4.0         # MLP expansion ratio
     PRED_HORIZON = 16       # Prediction horizon for training samples
     OBS_HORIZON = 8         # Observation horizon 
-    BATCH_SIZE = 200         # Batch size for training
+    BATCH_SIZE = 32         # Batch size for training
     EPOCHS = 3000           # Number of epochs to train 
     DEPTH = 4               # Number of transformer blocks
     LR = 1e-4               # Learning rate for optimizer
     
-    # create checkpoint
     SAVE_DIR = "checkpoints"
     os.makedirs(SAVE_DIR, exist_ok=True)
     
-    # Get the trajectory dataset
-    trajectory_dataset = TrajectoryDataset(pred_horizon=PRED_HORIZON,obs_horizon=OBS_HORIZON)
-    # Create a DataLoader for batching
+    # ==========================================
+    # 1. Dataset & DataLoader
+    # ==========================================
+    print("[trajectory_train] Initializing Dataset and DataLoader...")
+    trajectory_dataset = TrajectoryDataset(pred_horizon=PRED_HORIZON, obs_horizon=OBS_HORIZON)
     dataloader = DataLoader(trajectory_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    print("")
+    print(f"[trajectory_train] Dataset size: {len(trajectory_dataset)} | Batches/epoch: {len(dataloader)}")
     
-    # Initialize the Diffusion Policy model
-    model = DiffusionPolicy(action_dim=trajectory_dataset.action_dim,
-                            state_dim=trajectory_dataset.state_dim,
-                            embed_dim=EMBED_DIM,
-                            num_heads=NUM_HEADS,
-                            mlp_ratio=MLP_RATIO,
-                            num_blocks=DEPTH).to(DEVICE)
-    model.train()  # Set model to training mode
-    # EMA to track the exponential moving average of the model parameters
+    # ==========================================
+    # 2. Model & EMA Definition
+    # ==========================================
+    print("[trajectory_train] Initializing Model and EMA...")
+    model = DiffusionPolicy(
+        action_dim=trajectory_dataset.action_dim,
+        state_dim=trajectory_dataset.state_dim,
+        embed_dim=EMBED_DIM,
+        num_heads=NUM_HEADS,
+        mlp_ratio=MLP_RATIO,
+        num_blocks=DEPTH
+    ).to(DEVICE)
+    model.train()  
     ema_model = EMA(model, beta=0.995)
     
-    # Initialize the DDIM Scheduler for diffusion process
-    scheduler = DDIMScheduler(num_train_timesteps=TIMESTEPS,
-                              beta_schedule="squaredcos_cap_v2",
-                              clip_sample=True,
-                              set_alpha_to_one=True,   
-                              steps_offset=0,                         
-                              prediction_type="epsilon")
+    # ==========================================
+    # 3. Optimizer, Scheduler & Diffusion Setup
+    # ==========================================
+    scheduler = DDIMScheduler(
+        num_train_timesteps=TIMESTEPS,
+        beta_schedule="squaredcos_cap_v2",
+        clip_sample=True,
+        set_alpha_to_one=True,   
+        steps_offset=0,                         
+        prediction_type="epsilon"
+    )
     
-    # Optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
-    # loss function
     mse_loss = torch.nn.MSELoss()
     
-    # Training loop
+    # ==========================================
+    # 4. Training Loop
+    # ==========================================
+    print(f"[trajectory_train] Starting training for {EPOCHS} epochs ...")
     for epoch in range(1, EPOCHS + 1):
-    
         pbar = tqdm(dataloader, desc=f"Epoch {epoch}/{EPOCHS} Training")
 
         for step, batch in enumerate(pbar):
-            # 1. Get the batch of action sequences
             actions = batch['action'].to(DEVICE)  
             obs = batch['obs'].to(DEVICE)  
             
-            # 2. Sample random diffusion steps for each sequence in the batch
-            k = torch.randint(0, TIMESTEPS, (actions.shape[0],), device=actions.device)  # shape: (batch_size,)
-            
-            # 3. Add noise to the actions according to the sampled diffusion steps
+            k = torch.randint(0, TIMESTEPS, (actions.shape[0],), device=actions.device)  
             noise = torch.randn_like(actions)  
             noised_actions = scheduler.add_noise(actions, noise, k) 
             
-            # 4. Predict the noise using the Diffusion Policy model
             predicted_noise = model(observations=obs, diffusion_steps=k, noised_actions=noised_actions)
-            
-            # 5. Compute the loss between the predicted noise and the true noise
             loss = mse_loss(predicted_noise, noise)
-            # 6. Backpropagation and optimization step
+            
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             ema_model.update(model)
-            pbar.set_postfix({"Epoch": epoch, "Loss": loss.item()})
+            
+            pbar.set_postfix({"Loss": f"{loss.item():.5f}"})
         
         if epoch % 1000 == 0 or epoch == EPOCHS:
             checkpoint_path = os.path.join(SAVE_DIR, f"trajectory_diffusion_policy_{epoch}.pth")
             ema_model.save_pretrained(checkpoint_path)
-            print(f"\nSaved checkpoint to {checkpoint_path}")
-        
-    
-    
-    
-    
+            tqdm.write(f"[trajectory_train] Checkpoint saved at epoch {epoch} -> {checkpoint_path}")

@@ -4,47 +4,9 @@ import collections
 import matplotlib.pyplot as plt
 from noise_predictor import DiffusionPolicy
 from diffusers import DDIMScheduler
-from trajectory_dataset import Normalization
+from utils.normalization import NumpyNormalizer
 from trajectory_plot import generate_trajectory_forward
-
-class TemporalEnsembling:
-    """
-    Temporal Ensembling
-    Averages overlapping parts of multiple predictions to make the generated actions/trajectories smoother.
-    """
-    def __init__(self, pred_horizon, action_dim):
-        self.pred_horizon = pred_horizon
-        self.action_dim = action_dim
-        self.action_sum = np.zeros((pred_horizon, action_dim))
-        self.action_count = np.zeros((pred_horizon, 1))
-
-    def update(self, predicted_action_seq):
-        """
-        Add the currently predicted sequence into the buffer
-        """
-        self.action_sum += predicted_action_seq
-        self.action_count += 1
-
-    def get_and_shift_actions(self, n_actions):
-        """
-        Calculate the averaged actions and shift the buffer forward
-        """
-        # Prevent division by zero (though practically it's >= 1 if updated)
-        counts = np.maximum(self.action_count[:n_actions], 1)
-        avg_actions = self.action_sum[:n_actions] / counts
-        
-        # Update and shift the buffer
-        new_sum = np.zeros_like(self.action_sum)
-        new_count = np.zeros_like(self.action_count)
-        
-        if self.pred_horizon > n_actions:
-            new_sum[:-n_actions] = self.action_sum[n_actions:]
-            new_count[:-n_actions] = self.action_count[n_actions:]
-            
-        self.action_sum = new_sum
-        self.action_count = new_count
-        
-        return avg_actions
+from utils.ensembling import NumpyTemporalEnsembler
 
 def main():
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -86,7 +48,7 @@ def main():
 
     # --- 3. Setup Inference environment ---
     reference_traj = generate_trajectory_forward(num_steps=100)
-    normalizer = Normalization(reference_traj)
+    normalizer = NumpyNormalizer(reference_traj)
     
     current_state = reference_traj[0].copy()
     # Observation buffer (window of past states)
@@ -94,7 +56,7 @@ def main():
     actual_trajectory = [current_state.copy()]
 
     # Initialize Temporal Ensembling
-    temporal_ensembler = TemporalEnsembling(pred_horizon=PRED_HORIZON, action_dim=ACTION_DIM)
+    temporal_ensembler = NumpyTemporalEnsembler(pred_horizon=PRED_HORIZON, action_dim=ACTION_DIM)
 
     # --- 4. Closed-loop Inference ---
     print(f"Starting closed-loop inference for {MAX_EPISODE_STEPS} steps...")

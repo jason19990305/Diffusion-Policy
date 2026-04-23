@@ -5,22 +5,7 @@ from torch.utils.data import Dataset
 
 from trajectory_plot import generate_trajectory_forward, generate_trajectory_reverse
 
-# ---------------------------------
-# Normalization Class
-# ---------------------------------
-class Normalization:
-    # Min-Max Normalization
-    def __init__(self, data: np.ndarray):
-        self.min = np.min(data, axis=0) # [dim]
-        self.max = np.max(data, axis=0) # [dim]
-        self.range = self.max - self.min
-        self.range[self.range == 0] = 1e-5
-
-    def normalize(self, x):
-        return 2.0 * (x - self.min) / self.range - 1.0
-
-    def unnormalize(self, x_norm):
-        return (x_norm + 1.0) / 2.0 * self.range + self.min
+from utils.normalization import NumpyNormalizer
 
 # ---------------------------------
 # Trajectory Dataset Class
@@ -41,7 +26,7 @@ class TrajectoryDataset(Dataset):
         
         # Initialize normalizer on the combined dataset to ensure scale is equal
         combined_np = np.concatenate([self.traj_fwd_np, self.traj_rev_np], axis=0)
-        self.normalizer = Normalization(combined_np)
+        self.normalizer = NumpyNormalizer(combined_np)
         
         # apply normalization
         self.traj_fwd_np = self.normalizer.normalize(self.traj_fwd_np)

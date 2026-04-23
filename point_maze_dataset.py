@@ -4,20 +4,7 @@ import minari
 from torch.utils.data import Dataset
 import os
 
-# Reuse Normalization from trajectory_dataset
-class Normalization:
-    def __init__(self, data: np.ndarray):
-        # data: [N, dim]
-        self.min = np.min(data, axis=0)
-        self.max = np.max(data, axis=0)
-        self.range = self.max - self.min
-        self.range[self.range == 0] = 1e-5
-
-    def normalize(self, x):
-        return 2.0 * (x - self.min) / self.range - 1.0
-
-    def unnormalize(self, x_norm):
-        return (x_norm + 1.0) / 2.0 * self.range + self.min
+from utils.normalization import NumpyNormalizer
 
 class PointMazeDataset(Dataset):
     def __init__(self, dataset_id="D4RL/pointmaze/large-v2", pred_horizon=16, obs_horizon=2):
@@ -52,8 +39,8 @@ class PointMazeDataset(Dataset):
         all_states = np.concatenate(self.states, axis=0)
         all_actions = np.concatenate(self.actions, axis=0)
         
-        self.state_normalizer = Normalization(all_states)
-        self.action_normalizer = Normalization(all_actions)
+        self.state_normalizer = NumpyNormalizer(all_states)
+        self.action_normalizer = NumpyNormalizer(all_actions)
         
         # Normalize data
         self.normalized_states = [self.state_normalizer.normalize(s) for s in self.states]

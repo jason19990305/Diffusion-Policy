@@ -7,34 +7,7 @@ from noise_predictor import DiffusionPolicy
 from diffusers import DDIMScheduler
 from point_maze_dataset import PointMazeDataset
 
-class ActionEnsembler:
-    """Buffer for handling Temporal Ensembling of predicted action sequences."""
-    def __init__(self, pred_len, action_dim):
-        self.pred_len = pred_len
-        self.action_dim = action_dim
-        self.sum_buffer = np.zeros((pred_len, action_dim))
-        self.count_buffer = np.zeros((pred_len, 1))
-
-    def add_sequence(self, action_seq):
-        """Add a new predicted sequence to the ensemble buffer."""
-        length = min(len(action_seq), self.pred_len)
-        self.sum_buffer[:length] += action_seq[:length]
-        self.count_buffer[:length] += 1
-
-    def get_action_and_step(self, exec_len):
-        """Compute average actions and shift the buffer window forward."""
-        counts = np.clip(self.count_buffer[:exec_len], a_min=1, a_max=None)
-        avg_actions = self.sum_buffer[:exec_len] / counts
-        
-        new_sum = np.zeros_like(self.sum_buffer)
-        new_count = np.zeros_like(self.count_buffer)
-        if self.pred_len > exec_len:
-            new_sum[:-exec_len] = self.sum_buffer[exec_len:]
-            new_count[:-exec_len] = self.count_buffer[exec_len:]
-        
-        self.sum_buffer = new_sum
-        self.count_buffer = new_count
-        return avg_actions
+from utils.ensembling import NumpyTemporalEnsembler
 
 def render_eval():
     # --- 1. Hyperparameters & Configuration ---
@@ -92,7 +65,7 @@ def render_eval():
     while True: # Episode Loop
         obs, _ = env.reset()
         obs_buffer = collections.deque([get_state(obs)] * OBS_HORIZON, maxlen=OBS_HORIZON)
-        ensembler = ActionEnsembler(FUTURE_HORIZON, ACTION_DIM)
+        ensembler = NumpyTemporalEnsembler(FUTURE_HORIZON, ACTION_DIM)
         
         while True: # Control Loop
             # A. Prepare Observation Tensor
@@ -117,8 +90,8 @@ def render_eval():
             # Slice actions starting from the current timestep (index = OBS_HORIZON - 1)
             future_actions = action_seq[OBS_HORIZON-1:] 
             
-            ensembler.add_sequence(future_actions)
-            exec_actions = ensembler.get_action_and_step(ACTION_HORIZON)
+            ensembler.update(future_actions)
+            exec_actions = ensembler.get_and_shift_actions(ACTION_HORIZON)
             
             # D. Execute Action Sequence
             done = False

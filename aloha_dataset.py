@@ -12,21 +12,7 @@ import torchvision.transforms.functional as F
 warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-class TensorNormalizer:
-    """
-    Standard Min-Max Normalizer implemented strictly in PyTorch.
-    This avoids expensive Numpy <-> Tensor conversions during __getitem__.
-    """
-    def __init__(self, min_val, max_val):
-        self.min = torch.tensor(min_val, dtype=torch.float32)
-        self.max = torch.tensor(max_val, dtype=torch.float32)
-        self.range = torch.clamp(self.max - self.min, min=1e-5)
-
-    def normalize(self, x: torch.Tensor) -> torch.Tensor:
-        return 2.0 * (x - self.min) / self.range - 1.0
-
-    def unnormalize(self, x_norm: torch.Tensor) -> torch.Tensor:
-        return (x_norm + 1.0) / 2.0 * self.range + self.min
+from utils.normalization import TensorNormalizer
 
 class AlohaAugmentor:
     def __init__(self, image_size=128):

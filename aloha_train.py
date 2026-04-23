@@ -7,15 +7,15 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from noise_predictor import DiffusionPolicy, EMA
+from utils.noise_predictor import DiffusionPolicy, EMA
 from diffusers import DDIMScheduler
 from aloha_dataset import AlohaDataset
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="ALOHA Diffusion Policy Training")
-    parser.add_argument("--batch_size",    type=int,   default=16)
-    parser.add_argument("--total_steps",   type=int,   default=3e5)
+    parser.add_argument("--batch_size",    type=int,   default=32)
+    parser.add_argument("--total_steps",   type=int,   default=4e5)
     parser.add_argument("--lr",            type=float, default=2e-4)
     parser.add_argument("--num_workers",   type=int,   default=0) 
     parser.add_argument("--save_interval", type=int,   default=10000)

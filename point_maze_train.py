@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import os
-from noise_predictor import DiffusionPolicy, EMA
+from utils.noise_predictor import DiffusionPolicy, EMA
 from diffusers import DDIMScheduler
 from point_maze_dataset import PointMazeDataset
 

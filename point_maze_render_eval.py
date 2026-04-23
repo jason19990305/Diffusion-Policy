@@ -3,7 +3,7 @@ import numpy as np
 import gymnasium as gym
 import gymnasium_robotics
 import collections
-from noise_predictor import DiffusionPolicy
+from utils.noise_predictor import DiffusionPolicy
 from diffusers import DDIMScheduler
 from point_maze_dataset import PointMazeDataset
 

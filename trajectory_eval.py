@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import collections
 import matplotlib.pyplot as plt
-from noise_predictor import DiffusionPolicy
+from utils.noise_predictor import DiffusionPolicy
 from diffusers import DDIMScheduler
 from utils.normalization import NumpyNormalizer
 from trajectory_plot import generate_trajectory_forward
@@ -118,7 +118,7 @@ def main():
     plt.grid(True, linestyle=':', alpha=0.7)
     plt.axis('equal')
     
-    output_path = "trajectory_inference_ensembling.png"
+    output_path = "assets/trajectory_inference_ensembling.png"
     plt.savefig(output_path, dpi=150)
     plt.show()
     print(f"\nInference completed. Comparison plot saved as {output_path}")

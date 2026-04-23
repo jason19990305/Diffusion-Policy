@@ -4,7 +4,7 @@ import gymnasium as gym
 import gymnasium_robotics
 import matplotlib.pyplot as plt
 import collections
-from noise_predictor import DiffusionPolicy
+from utils.noise_predictor import DiffusionPolicy
 from diffusers import DDIMScheduler
 from point_maze_dataset import PointMazeDataset
 
@@ -135,8 +135,8 @@ def plot_eval(num_episodes=5):
     plt.axis('equal')
     plt.tight_layout()
     
-    plt.savefig("diffusion_plot_eval.png")
-    print("Plot saved to diffusion_plot_eval.png")
+    plt.savefig("assets/diffusion_plot_eval.png")
+    print("Plot saved to assets/diffusion_plot_eval.png")
     plt.show()
 
 if __name__ == "__main__":

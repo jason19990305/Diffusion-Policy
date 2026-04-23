@@ -15,7 +15,7 @@ import gym_aloha
 from lerobot.envs.factory import make_env
 from lerobot.envs.configs import AlohaEnv
 
-from noise_predictor import DiffusionPolicy
+from utils.noise_predictor import DiffusionPolicy
 from aloha_dataset import AlohaDataset
 
 
@@ -25,7 +25,7 @@ from utils.ensembling import TensorTemporalEnsembler
 def parse_args():
     parser = argparse.ArgumentParser(description="ALOHA Evaluation (Spatial Softmax)")
     parser.add_argument("--checkpoint",   type=str, default="checkpoints/aloha_diffusion_step_400000.pth")
-    parser.add_argument("--output",       type=str, default="eval_aloha.mp4")
+    parser.add_argument("--output",       type=str, default="assets/eval_aloha.mp4")
     parser.add_argument("--num_episodes", type=int, default=5)
     parser.add_argument("--fps",          type=int, default=50)
     parser.add_argument("--ddim_steps",   type=int, default=20)

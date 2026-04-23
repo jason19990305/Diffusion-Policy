@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
 # Assume these are imported from your actual project
-from noise_predictor import DiffusionPolicy
+from utils.noise_predictor import DiffusionPolicy
 from diffusers import DDIMScheduler
 from utils.normalization import NumpyNormalizer
 from trajectory_plot import generate_trajectory_forward
@@ -203,7 +203,7 @@ if __name__ == "__main__":
                         init_func=init, blit=True, interval=33) # interval=33ms per frame (~30 fps)
 
     # Save as GIF using Pillow writer 
-    gif_path = "diffusion_policy_trajectory.gif"
+    gif_path = "assets/diffusion_policy_trajectory.gif"
     ani.save(gif_path, writer='pillow', fps=30, 
              savefig_kwargs={'transparent': False, 'facecolor': 'white'})
     

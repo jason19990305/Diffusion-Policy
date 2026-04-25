@@ -5,7 +5,7 @@
 [![Gymnasium](https://img.shields.io/badge/Gymnasium-0.28%2B-green)](https://gymnasium.farama.org/)
 [![Diffusers](https://img.shields.io/badge/Diffusers-0.20%2B-yellow)](https://huggingface.co/docs/diffusers/index)
 
-HackMD Article : https://hackmd.io/@bGCXESmGSgeAArScMaBxLA/B1vYJqVu-g
+HackMD Article : https://hackmd.io/@bGCXESmGSgeAArScMaBxLA/rJHw7tG9Zl
 
 This project implements a robotic behavior learning framework based on the **Diffusion Policy** architecture. It treats action sequence prediction as a conditional generative modeling problem, utilizing a **Transformer-based Diffusion Model** to learn complex multi-modal behaviors. The project supports various environments, ranging from simple 2D trajectories to high-dimensional visual manipulation tasks like ALOHA, and leverages **Temporal Ensembling** for smooth, robust action execution.
 
@@ -99,8 +99,22 @@ python aloha_render_eval.py --checkpoint checkpoints/aloha_diffusion.pth
   Features **EMA (Exponential Moving Average)** for weight smoothing, **Mixed Precision (BFloat16)** for faster computation, and **Gradient Checkpointing** to enable training deep Transformers on consumer GPUs.
 
 ## Result
-### Point Maze Navigation
-![Point Maze Result](./assets/point_maze_navigation.png)
+
+
 
 ### Trajectory Denoising Process
-![Trajectory GIF](./assets/trajectory_denoising.gif)
+<img width="800" height="600" alt="diffusion_policy_trajectory" src="https://github.com/user-attachments/assets/a4edbb55-e147-4227-93f3-eb44a1fed48b" />
+
+
+
+
+### Point Maze Navigation
+<img width="1462" height="1083" alt="image" src="https://github.com/user-attachments/assets/bbcd912b-80cb-4cbd-b243-1c65b0b60a42" />
+
+<img width="528" height="357" alt="upload_6bb4d7ad565d722cfb8713de47033d4a" src="https://github.com/user-attachments/assets/3cb261bc-a3d1-409b-a361-66170b798dfc" />
+
+
+### Aloha 
+
+<img width="640" height="480" alt="eval_aloha_0-ezgif com-video-to-gif-converter" src="https://github.com/user-attachments/assets/1c08e48c-a753-45cf-b0ec-ab26a2973e86" />
+

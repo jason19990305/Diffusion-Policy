@@ -114,7 +114,7 @@ python aloha_render_eval.py --checkpoint checkpoints/aloha_diffusion.pth
 <img width="528" height="357" alt="upload_6bb4d7ad565d722cfb8713de47033d4a" src="https://github.com/user-attachments/assets/3cb261bc-a3d1-409b-a361-66170b798dfc" />
 
 
-### Aloha 
+### Aloha Transfer Cube
 
 <img width="640" height="480" alt="eval_aloha_0-ezgif com-video-to-gif-converter" src="https://github.com/user-attachments/assets/1c08e48c-a753-45cf-b0ec-ab26a2973e86" />
 

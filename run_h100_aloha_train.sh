@@ -31,7 +31,7 @@ fi
 # Recommendation: ALOHA Sim can handle BS 512 or even 1024 on H100
 BS=64 
 LR=2e-4        # Optimal LR for 5090 with Augmentation
-STEPS=600000        # [修改] 縮短訓練步數至 600K，讓學習率 (Cosine) 提早衰減，防止震盪並幫助模型穩定收斂
+STEPS=600000        # [Update] Shortened training steps to 600K to allow learning rate (Cosine) to decay earlier, preventing oscillation and helping stable convergence.
 SAVE=10000       # Less frequent saving
 WORKERS=16      # Use more workers for high-core CPUs to avoid I/O bottlenecks
 

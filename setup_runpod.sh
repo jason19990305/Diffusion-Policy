@@ -2,7 +2,7 @@
 
 echo "🚀 Starting Final Corrected Setup for H100 (2026-04-04)..."
 
-# 1. 系統相依庫
+# 1. System Dependencies
 export DEBIAN_FRONTEND=noninteractive
 apt-get update && apt-get install -y \
     libgl1-mesa-glx libosmesa6-dev libglew-dev libglib2.0-0 \
@@ -10,24 +10,24 @@ apt-get update && apt-get install -y \
     ffmpeg libsndfile1 git-lfs ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 徹底清理
+# 2. Complete Cleanup
 python -m pip uninstall -y xformers opencv-python opencv-contrib-python \
     opencv-python-headless numpy torch torchvision torchaudio lerobot
 
-# 3. 安裝 PyTorch
+# 3. Install PyTorch
 echo "🔥 Installing PyTorch 2.11.0..."
 python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
-# 4. 安裝基礎工具與編譯依賴 (針對 Python 3.12 修正)
+# 4. Install Base Tools & Build Dependencies (Fix for Python 3.12)
 echo "🛠️ Installing Base Tools & Build Dependencies..."
 python -m pip install --upgrade pip
-# 必須先安裝 setuptools 與 wheel，否則舊版套件在 Python 3.12 會無法編譯
+# Must install setuptools and wheel first, otherwise old packages may fail to compile on Python 3.12
 python -m pip install setuptools wheel "opencv-python-headless>=4.11.0.86" "numpy>=2.2.0"
 
-# 獨立安裝 antlr4 (omegaconf 的依賴)，並關閉 build-isolation 強制使用剛剛裝好的 setuptools
+# Install antlr4 (omegaconf dependency) separately, disabling build-isolation to use installed setuptools
 python -m pip install "antlr4-python3-runtime==4.9.3" --no-build-isolation
 
-# 5. 安裝機器人環境 (修正 Gymnasium 版本範圍以符合 lerobot)
+# 5. Install Robotics Ecosystem (Corrected Versions to match lerobot)
 echo "📦 Installing Robotics Ecosystem (Corrected Versions)..."
 python -m pip install \
     "lerobot==0.5.0" \
@@ -37,7 +37,7 @@ python -m pip install \
     "gym-aloha==0.1.3" \
     "gym-pusht==0.1.5"
 
-# 6. 安裝核心 AI 工具
+# 6. Install Core AI Tools
 echo "🧠 Installing AI tools (Corrected Versions)..."
 python -m pip install \
     "transformers>=4.48.0" \
@@ -51,7 +51,7 @@ python -m pip install \
     "omegaconf>=2.3.0" \
     wandb tensorboard tqdm scipy pyyaml
 
-# 7. 環境變數設定
+# 7. Environment Variables Configuration
 echo "🔧 Configuring Environment..."
 if ! grep -q "MUJOCO_GL" ~/.bashrc; then
     {

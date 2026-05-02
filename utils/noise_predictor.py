@@ -211,18 +211,18 @@ class ResBlock(nn.Module):
 
 class VisionEncoder(nn.Module):
     """
-    Mini-ResNet + SpatialSoftmax designed for 128x128 images, ideal for training from scratch.
+    Mini-ResNet + SpatialSoftmax. Optimized for ALOHA (224x224) but supports 128x128 (default).
     """
     def __init__(self, in_channels: int = 3, image_size: int = 128, embed_dim: int = 256):
         super().__init__()
         
         # 1. Lightweight ResNet feature extractor (Downsamples by a total factor of 16)
         self.cnn = nn.Sequential(
-            # Input: (B, 3, 128, 128)
+            # Input: (B, 3, H, W) -> e.g. (B, 3, 224, 224) for ALOHA
             nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1, bias=False),
             nn.GroupNorm(8, 32),
             nn.ReLU(inplace=True),  
-            # -> (B, 32, 64, 64)
+            # -> (B, 32, H/2, W/2)
             
             ResBlock(32, 64, stride=2),   
             # -> (B, 64, 32, 32)
@@ -235,7 +235,7 @@ class VisionEncoder(nn.Module):
         )
         
         # 2. Spatial Softmax Module
-        # Image is downsampled by 2*2*2*2 = 16 times, so 128 / 16 = 8
+        # Image is downsampled by 2*2*2*2 = 16 times: 128/16=8 or 224/16=14 (ALOHA)
         feat_size = image_size // 16
         num_channels = 256
         
@@ -254,7 +254,7 @@ class VisionEncoder(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, 3, 128, 128)
+        # x: (B, 3, H, W) -> e.g. (B, 3, 224, 224) for ALOHA
         features = self.cnn(x)                     # -> (B, 256, 8, 8)
         keypoints = self.spatial_softmax(features) # -> (B, 512)
         img_token = self.proj(keypoints)           # -> (B, embed_dim)

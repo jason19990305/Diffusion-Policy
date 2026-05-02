@@ -239,7 +239,7 @@ if __name__ == "__main__":
     print(f"Observation Horizon: {dataset.obs_horizon}")
     print(f"Prediction Horizon:  {dataset.pred_horizon}")
     print(f"Obs State Shape:     {list(sample['obs'].shape)}")    # Expected: [4, 14]
-    print(f"Obs Image Shape:     {list(sample['image'].shape)}")  # Expected: [4, 3, 128, 128]
+    print(f"Obs Image Shape:     {list(sample['image'].shape)}")  # Expected: [4, 3, 224, 224] for ALOHA (224 mode)
     print(f"Action Chunk Shape:  {list(sample['action'].shape)}") # Expected: [16, 14]
 
     from torch.utils.data import DataLoader
@@ -255,5 +255,5 @@ if __name__ == "__main__":
     print(f"Observation Horizon: {dataset.obs_horizon}")
     print(f"Prediction Horizon:  {dataset.pred_horizon}")
     print(f"Obs State Shape:     {list(sample['obs'].shape)}")    # Expected: [4, 14]
-    print(f"Obs Image Shape:     {list(sample['image'].shape)}")  # Expected: [4, 3, 128, 128]
+    print(f"Obs Image Shape:     {list(sample['image'].shape)}")  # Expected: [4, 3, 224, 224] for ALOHA (224 mode)
     print(f"Action Chunk Shape:  {list(sample['action'].shape)}") # Expected: [16, 14]

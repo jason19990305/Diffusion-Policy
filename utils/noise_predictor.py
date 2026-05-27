@@ -80,7 +80,7 @@ class TimestepEmbedder(nn.Module):
 
 
 # ---------------------------------
-# Efficient Attention (Flash Attention)
+# Efficient Attention (With Mask Support)
 # ---------------------------------
 class EfficientAttention(nn.Module):
     def __init__(self, embed_dim, num_heads):
@@ -93,12 +93,13 @@ class EfficientAttention(nn.Module):
         self.qkv = nn.Linear(embed_dim, embed_dim * 3)
         self.proj = nn.Linear(embed_dim, embed_dim)
 
-    def forward(self, x):
+    def forward(self, x, attn_mask=None):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        attn_out = F.scaled_dot_product_attention(q, k, v)
+        # Use PyTorch's native scaled dot product attention, passing down the boolean mask
+        attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         attn_out = attn_out.transpose(1, 2).reshape(B, N, C)
         return self.proj(attn_out)
 
@@ -116,8 +117,8 @@ class TransformerBlock(nn.Module):
         hidden_dim = int(embed_dim * mlp_ratio)
         self.mlp = SwiGLU(embed_dim, hidden_dim, embed_dim)
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.norm1(x))
+    def forward(self, x: torch.Tensor, attn_mask=None) -> torch.Tensor:
+        x = x + self.attn(self.norm1(x), attn_mask=attn_mask)
         x = x + self.mlp(self.norm2(x))
         return x
 
@@ -175,12 +176,9 @@ class SpatialSoftmax(nn.Module):
 class ResBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, stride: int = 1, groups: int = 8):
         super().__init__()
-        # Ensure out_channels is divisible by groups
-        # For channels [32, 64, 128, 256], groups=8 or 16 will work perfectly.
-        
         # First convolutional layer
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.gn1 = nn.GroupNorm(groups, out_channels) # Fixed: (num_groups, num_channels)
+        self.gn1 = nn.GroupNorm(groups, out_channels)
         
         # Second convolutional layer
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
@@ -195,69 +193,47 @@ class ResBlock(nn.Module):
             )
 
     def forward(self, x):
-        # 1. First Conv + GN + ReLU
         out = F.relu(self.gn1(self.conv1(x)), inplace=True)
-        
-        # 2. Second Conv + GN
         out = self.gn2(self.conv2(out))
-        
-        # 3. Add shortcut connection
         out += self.shortcut(x)
-        
-        # 4. Final ReLU
         out = F.relu(out, inplace=True)
         return out
 
 
+# ---------------------------------
+# Vision Encoder Class
+# ---------------------------------
 class VisionEncoder(nn.Module):
-    """
-    Mini-ResNet + SpatialSoftmax. Optimized for ALOHA (224x224) but supports 128x128 (default).
-    """
     def __init__(self, in_channels: int = 3, image_size: int = 128, embed_dim: int = 256):
         super().__init__()
-        
-        # 1. Lightweight ResNet feature extractor (Downsamples by a total factor of 16)
         self.cnn = nn.Sequential(
-            # Input: (B, 3, H, W) -> e.g. (B, 3, 224, 224) for ALOHA
             nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1, bias=False),
             nn.GroupNorm(8, 32),
             nn.ReLU(inplace=True),  
-            # -> (B, 32, H/2, W/2)
-            
             ResBlock(32, 64, stride=2),   
-            # -> (B, 64, 32, 32)
-            
             ResBlock(64, 128, stride=2),  
-            # -> (B, 128, 16, 16)
-            
             ResBlock(128, 256, stride=2)  
-            # -> (B, 256, 8, 8)
         )
         
-        # 2. Spatial Softmax Module
-        # Image is downsampled by 2*2*2*2 = 16 times: 128/16=8 or 224/16=14 (ALOHA)
         feat_size = image_size // 16
         num_channels = 256
         
-        # (Assuming the SpatialSoftmax class defined earlier is available)
         self.spatial_softmax = SpatialSoftmax(
             height=feat_size, 
             width=feat_size, 
             num_channels=num_channels
         )
         
-        # 3. Final projection: maps 256 coordinate pairs (512 values) to Transformer's embed_dim
         self.proj = nn.Sequential(
             nn.Linear(num_channels * 2, embed_dim),
-            nn.LayerNorm(embed_dim),  # Add LayerNorm to stabilize tokens fed into the Transformer
+            nn.LayerNorm(embed_dim),
             nn.SiLU()
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, 3, H, W) -> e.g. (B, 3, 224, 224) for ALOHA
-        features = self.cnn(x)                     # -> (B, 256, 8, 8)
-        keypoints = self.spatial_softmax(features) # -> (B, 512)
-        img_token = self.proj(keypoints)           # -> (B, embed_dim)
+        features = self.cnn(x)                     
+        keypoints = self.spatial_softmax(features) 
+        img_token = self.proj(keypoints)           
         return img_token
 
 
@@ -286,14 +262,19 @@ class DiffusionPolicy(nn.Module):
         self.use_image = use_image
         self.use_checkpoint = use_checkpoint
         
-        # 1. Observation (state) embedding
+        # 1. Input projectors
         self.obs_embedder = nn.Linear(state_dim, embed_dim)
-        # 2. Time embedding for diffusion step information
         self.time_embedder = TimestepEmbedder(freq_dim=embed_dim, embed_dim=embed_dim)
-        # 3. Noised action embedding
         self.action_embedder = nn.Linear(action_dim, embed_dim)
         
-        # 4. Image Vision Encoder (CNN + Spatial Softmax)
+        # 2. Learnable modality embeddings to help the Transformer decouple input sources
+        self.obs_modality_emb = nn.Parameter(torch.randn(1, 1, embed_dim) * 0.02)
+        self.action_modality_emb = nn.Parameter(torch.randn(1, 1, embed_dim) * 0.02)
+        self.time_modality_emb = nn.Parameter(torch.randn(1, 1, embed_dim) * 0.02)
+        if use_image:
+            self.img_modality_emb = nn.Parameter(torch.randn(1, 1, embed_dim) * 0.02)
+        
+        # 3. Vision Encoder
         if use_image:
             self.vision_encoder = VisionEncoder(
                 in_channels=in_channels,
@@ -302,12 +283,12 @@ class DiffusionPolicy(nn.Module):
             )
             print(f"[DiffusionPolicy] Image mode: {image_size}x{image_size} using SpatialSoftmax")
         
-        # 5. Transformer blocks
+        # 4. Transformer blocks
         self.blocks = nn.ModuleList([
             TransformerBlock(embed_dim, num_heads, mlp_ratio) for _ in range(num_blocks)
         ])
         
-        # 6. Final projection
+        # 5. Final action projector
         self.final_proj = nn.Linear(embed_dim, action_dim)
 
     def forward(
@@ -317,48 +298,64 @@ class DiffusionPolicy(nn.Module):
         noised_actions: torch.Tensor,    # (B, pred_horizon, action_dim)
         images: torch.Tensor = None,     # (B, obs_horizon, C, H, W) optional
     ) -> torch.Tensor:
+        B, T_obs, _ = observations.shape
+        T_pred = noised_actions.shape[1]
+        device = observations.device
         
-        # 1. Embed states, time, and actions
-        obs_emb = self.obs_embedder(observations)
-        time_emb = self.time_embedder(diffusion_steps).reshape(-1, 1, self.embed_dim)
-        action_emb = self.action_embedder(noised_actions)
+        # 1. Project modalities and inject modality embeddings
+        obs_emb = self.obs_embedder(observations) + self.obs_modality_emb
+        time_emb = self.time_embedder(diffusion_steps).reshape(-1, 1, self.embed_dim) + self.time_modality_emb
+        action_emb = self.action_embedder(noised_actions) + self.action_modality_emb
         
-        # 2. Base token sequence
-        tokens =[obs_emb, time_emb, action_emb]
+        tokens = [obs_emb, time_emb, action_emb]
         
-        # 3. Process Images using Spatial Softmax
+        # 2. Process visual features if active
         if self.use_image and images is not None:
-            B, T_obs, C, H, W = images.shape
-            imgs_flat = images.reshape(B * T_obs, C, H, W)
+            B_img, T_img, C, H, W = images.shape
+            imgs_flat = images.reshape(B_img * T_img, C, H, W)
             
-            # Extract features and keypoints -> 1 Token per image frame
             img_tokens = self.vision_encoder(imgs_flat)  # (B*T_obs, embed_dim)
+            img_tokens = img_tokens.reshape(B_img, T_img, self.embed_dim) + self.img_modality_emb
             
-            # Reshape back to sequence: (B, T_obs, embed_dim)
-            img_tokens = img_tokens.reshape(B, T_obs, self.embed_dim)
-            
-            # Prepend image tokens
             tokens = [img_tokens] + tokens
         
-        # 4. Concatenate tokens along sequence dimension
+        # 3. Concatenate tokens along sequence dimension
         x = torch.cat(tokens, dim=1)
 
-        # 5. Add sinusoidal positional encoding
-        seq_len = x.shape[1]
-        positions = torch.arange(seq_len, device=x.device)
+        # 4. Generate temporally-aligned sinusoidal positional encodings
+        # Assign same positional steps [0 ... T_obs-1] to both Image and Obs tokens.
+        # Global time token receives index 0, and future actions start after the history window.
+        img_positions = torch.arange(T_obs, device=device)
+        obs_positions = torch.arange(T_obs, device=device)
+        time_position = torch.zeros(1, dtype=torch.long, device=device)
+        action_positions = torch.arange(T_obs, T_obs + T_pred, device=device)
+        
+        if self.use_image and images is not None:
+            positions = torch.cat([img_positions, obs_positions, time_position, action_positions], dim=0)
+        else:
+            positions = torch.cat([obs_positions, time_position, action_positions], dim=0)
+            
         pos_emb = TimestepEmbedder.sinusoidal(positions, self.embed_dim)
         x = x + pos_emb
         
-        # 6. Pass through Transformer blocks
+        # 5. Create block-causal attention mask to protect history tokens from leakage
+        # Conditioning/History tokens occupy the first (L - T_pred) indices.
+        L_total = x.shape[1]
+        N_hist = L_total - T_pred
+        attn_mask = torch.ones((L_total, L_total), dtype=torch.bool, device=device)
+        
+        # Block attention flowing from condition tokens into future target actions
+        attn_mask[:N_hist, N_hist:] = False
+        
+        # 6. Pass through Transformer blocks with attention masking
         for block in self.blocks:
             if self.use_checkpoint and self.training:
                 import torch.utils.checkpoint as cp
-                x = cp.checkpoint(block, x, use_reentrant=False)
+                x = cp.checkpoint(block, x, attn_mask, use_reentrant=False)
             else:
-                x = block(x)
+                x = block(x, attn_mask=attn_mask)
         
-        # 7. Extract action tokens (at the tail of the sequence)
-        action_seq_len = noised_actions.shape[1]
-        action_out = x[:, -action_seq_len:, :]
+        # 7. Extract future action predictions at the tail of the sequence
+        action_out = x[:, -T_pred:, :]
         output = self.final_proj(action_out)
         return output

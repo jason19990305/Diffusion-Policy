@@ -17,7 +17,7 @@ from aloha_dataset import AlohaDataset
 def parse_args():
     parser = argparse.ArgumentParser(description="ALOHA Consistency Policy Distillation")
     parser.add_argument("--batch_size",    type=int,   default=32)
-    parser.add_argument("--total_steps",   type=int,   default=100000) # 100k for distillation
+    parser.add_argument("--total_steps",   type=int,   default=100000)
     parser.add_argument("--lr",            type=float, default=2e-4)
     parser.add_argument("--num_workers",   type=int,   default=0) 
     parser.add_argument("--save_interval", type=int,   default=10000)
@@ -29,11 +29,11 @@ if __name__ == "__main__":
     # ==========================================
     torch.set_float32_matmul_precision('high')
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[aloha_consistency_distill] Using device: {DEVICE}")
+    print(f"Using device: {DEVICE}")
 
     args = parse_args()
 
-    # Diffusion & Model architecture settings
+    # Model Architecture (Must match Teacher)
     TIMESTEPS    = 100        
     PRED_HORIZON = 32         
     OBS_HORIZON  = 4          
@@ -42,11 +42,11 @@ if __name__ == "__main__":
     MLP_RATIO    = 4.0        
     DEPTH        = 12         
 
-    # Image settings
+    # Image Settings
     IMAGE_SIZE   = 224           
     IN_CHANNELS  = 3             
 
-    # Training loop settings
+    # Training Constants
     WARMUP_STEPS = 3000
     LOG_INTERVAL = 100         
     SAVE_DIR     = "checkpoints"
@@ -72,7 +72,7 @@ if __name__ == "__main__":
         drop_last=True,
         persistent_workers=(args.num_workers > 0),
     )
-    print(f"[aloha_consistency_distill] Dataset size: {len(dataset)} | Batches/epoch: {len(dataloader)}")
+    print(f"Dataset size: {len(dataset)} | Batches/epoch: {len(dataloader)}")
 
     # ==========================================
     # 2. Models Initialization
@@ -91,33 +91,27 @@ if __name__ == "__main__":
         use_checkpoint=True,
     ).to(DEVICE)
 
+    # Load Teacher weights
     if os.path.exists(CHECKPOINT_PATH):
         teacher_inner.load_state_dict(torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=True))
-        print(f"[aloha_consistency_distill] Loaded teacher from {CHECKPOINT_PATH}")
+        print(f"Loaded teacher from {CHECKPOINT_PATH}")
     else:
         raise FileNotFoundError(f"Teacher checkpoint not found at {CHECKPOINT_PATH}")
         
-    teacher_inner.eval()
-    for param in teacher_inner.parameters():
-        param.requires_grad = False
+    teacher_inner.eval().requires_grad_(False)
 
     # Initialize Student & Target
-    student_inner = copy.deepcopy(teacher_inner)
-    for param in student_inner.parameters():
-        param.requires_grad = True
+    student_inner = copy.deepcopy(teacher_inner).requires_grad_(True)
     student_model = ConsistencyPolicy(student_inner, sigma_data=0.1).to(DEVICE)
     student_model.train()
     
-    target_inner = copy.deepcopy(teacher_inner)
-    target_model = ConsistencyPolicy(target_inner, sigma_data=0.1).to(DEVICE)
+    target_model = copy.deepcopy(student_model).requires_grad_(False)
     target_model.eval()
-    for param in target_model.parameters():
-        param.requires_grad = False
 
     target_ema = EMA(student_model, beta=0.999)
 
     # ==========================================
-    # 3. Optimizer, Scheduler & Diffusion Setup
+    # 3. Optimizer, Scheduler & Loss Setup
     # ==========================================
     scheduler = DDIMScheduler(
         num_train_timesteps=TIMESTEPS,
@@ -135,6 +129,7 @@ if __name__ == "__main__":
 
     optimizer = torch.optim.AdamW(student_model.parameters(), lr=args.lr, weight_decay=1e-3, eps=1e-5)
     
+    # Cosine learning rate schedule with linear warmup
     def lr_lambda(current_step):
         if current_step < WARMUP_STEPS:
             return float(current_step) / float(max(1, WARMUP_STEPS))
@@ -146,7 +141,7 @@ if __name__ == "__main__":
     # ==========================================
     # 4. Training Loop
     # ==========================================
-    print(f"[aloha_consistency_distill] Starting training for {args.total_steps} steps ...")
+    print(f"Starting training for {args.total_steps} steps...")
     global_step = 0
     t_start = time.time()
     
@@ -162,9 +157,8 @@ if __name__ == "__main__":
             images  = batch["image"].to(DEVICE, non_blocking=True)
             actions = batch["action"].to(DEVICE, non_blocking=True)
 
-            # Sample t and t_next
-            t_idx = torch.randint(0, TIMESTEPS - 1, (1,), device=DEVICE)
-            t_indices = t_idx.repeat(obs.shape[0])
+            # Sample t and t_next (one unique value per batch item)
+            t_indices = torch.randint(0, TIMESTEPS - 1, (obs.shape[0],), device=DEVICE)
             t_next_indices = t_indices + 1
 
             # --- Forward Pass (BF16 Autocast) ---
@@ -177,7 +171,7 @@ if __name__ == "__main__":
                     actions=actions,
                     t=t_indices,
                     t_next=t_next_indices,
-                    images=images # Ensure images are passed!
+                    images=images
                 )
 
             # --- Backward Pass & Optimize ---
@@ -187,6 +181,7 @@ if __name__ == "__main__":
             optimizer.step()
             lr_scheduler.step()
             
+            # Update Target using EMA
             target_ema.update(student_model)
             target_ema.copy_to(target_model)
 
@@ -207,14 +202,13 @@ if __name__ == "__main__":
                 })
 
             if global_step % args.save_interval == 0:
-                ckpt_path = os.path.join(SAVE_DIR, f"aloha_consistency_policy_step_{global_step}.pth")
-                torch.save(student_model.state_dict(), ckpt_path)
-                torch.save(student_model.state_dict(), os.path.join(SAVE_DIR, "aloha_consistency_policy.pth"))
-                tqdm.write(f"[aloha_consistency_distill] Checkpoint saved at step {global_step}")
+                torch.save(student_model.state_dict(), f"{SAVE_DIR}/aloha_consistency_policy_step_{global_step}.pth")
+                torch.save(student_model.state_dict(), f"{SAVE_DIR}/aloha_consistency_policy.pth")
+                tqdm.write(f"Checkpoint saved at step {global_step}")
 
     pbar.close()
     
     # Save final model
-    final_path = os.path.join(SAVE_DIR, "aloha_consistency_policy.pth")
+    final_path = f"{SAVE_DIR}/aloha_consistency_policy.pth"
     torch.save(student_model.state_dict(), final_path)
-    print(f"[aloha_consistency_distill] Training complete. Final model -> {final_path}")
+    print(f"Training complete. Final model saved to {final_path}")
